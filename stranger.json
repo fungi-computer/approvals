@@ -1,0 +1,75 @@
+{
+  "expectedTarballFiles": [
+    "package/LICENSE",
+    "package/README.md",
+    "package/dist/contract.d.ts",
+    "package/dist/contract.js",
+    "package/dist/index.d.ts",
+    "package/dist/index.js",
+    "package/dist/ledger.d.ts",
+    "package/dist/ledger.js",
+    "package/docs/api/README.md",
+    "package/package.json"
+  ],
+  "localDependencies": ["../watchdog"],
+  "runtimeFixture": "test/stranger/runtime.mjs",
+  "typechecks": [
+    {
+      "fixture": "test/stranger/consumer.mts"
+    }
+  ],
+  "docs": {
+    "sigil": "restricted",
+    "home": {
+      "lead": "Durable approval records for TypeScript hosts: stage a proposed write, collect a human decision, and recheck authority before dispatch.",
+      "example": {
+        "file": "home.ts",
+        "title": "Stage a write without executing it",
+        "caption": "Uses an in-memory native SQLite database to record a pending Team write. No operation is dispatched."
+      },
+      "ladder": {
+        "start": [
+          {
+            "title": "Quickstart",
+            "href": "/quickstart/",
+            "description": "Create a ledger and stage one pending write."
+          },
+          {
+            "title": "Contract model",
+            "href": "/concepts/#contract-model",
+            "description": "Understand decisions, current authority and at-most-once dispatch."
+          }
+        ],
+        "tasks": [
+          {
+            "title": "Connect your host",
+            "href": "/examples/",
+            "description": "Supply member identity, live authority checks and ordinary result delivery."
+          },
+          {
+            "title": "Read auto-approve policy",
+            "href": "/concepts/#host-admission-policy-read",
+            "description": "Select policy without treating it as an authority grant."
+          }
+        ],
+        "reference": [
+          {
+            "title": "API reference",
+            "href": "/api/",
+            "description": "Ledger, request types and contract schemas."
+          },
+          {
+            "title": "Install",
+            "href": "/install/",
+            "description": "Install the ESM package and its native SQLite adapter."
+          },
+          {
+            "title": "Status and limits",
+            "href": "/status/",
+            "description": "Package version and implementation boundaries."
+          }
+        ]
+      }
+    }
+  }
+}

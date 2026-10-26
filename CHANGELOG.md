@@ -1,5 +1,15 @@
 # @fungi.computer/approvals
 
+## 0.1.0
+
+### Minor Changes
+
+- Changes since 0.0.2:
+
+  - feat(local): remember human-approved exec prefixes
+  - feat(local): dispatch approved sandbox escapes once through ledger handoff
+  - feat(local): stage sandbox escapes as approval records
+
 ## 0.0.2
 
 ### Patch Changes

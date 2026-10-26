@@ -47,6 +47,10 @@ export type ApprovalRequest = Readonly<{
   /** Persisted turn/tool identity and operation ordinal; never random on retry. */
   idempotencyKey: string;
   inputJson: string;
+  /** Host-only containment escalation: a general auto-approve rule cannot bypass the sandbox. */
+  requireHumanApproval?: boolean;
+  /** Host-attested matching command-prefix policy; independent of the general auto-approve switch. */
+  prefixPolicyApproved?: boolean;
 }>;
 
 /** Host-only policy read for an admitted Agent/module/access selection, not execution authority. */
@@ -391,6 +395,8 @@ export class ApprovalLedger {
   > {
     // Preserve the reviewed identity, authority and payload across the digest await.
     const request = structuredClone(input);
+    if (request.requireHumanApproval && request.prefixPolicyApproved)
+      throw new Error("A human-required request cannot be policy-approved");
     const attachments =
       evidence === undefined
         ? {}
@@ -422,6 +428,7 @@ export class ApprovalLedger {
         if (
           existing.description.inputSha256 !== inputSha256 ||
           existing.authorityFence !== request.authorityFence ||
+          (request.requireHumanApproval && existing.by?.kind === "policy") ||
           JSON.stringify(existing.evidence ?? []) !==
             JSON.stringify(attachments.evidence ?? [])
         )
@@ -429,11 +436,14 @@ export class ApprovalLedger {
         return { kind: "record", record: existing, created: false };
       }
       const now = this.options.now();
-      const autoApproved = this.selectAutoApprove({
-        agentId: request.requester.agentId,
-        module: request.module,
-        access: request.access,
-      });
+      const autoApproved =
+        request.prefixPolicyApproved === true ||
+        (!request.requireHumanApproval &&
+          this.selectAutoApprove({
+            agentId: request.requester.agentId,
+            module: request.module,
+            access: request.access,
+          }));
       const record = Schema.decodeUnknownSync(ApprovalRecordSchema, {
         onExcessProperty: "error",
       })({
@@ -647,6 +657,12 @@ export class ApprovalLedger {
       )
       .toArray()
       .map((row) => decode(row).record_id);
+  }
+
+  /** Host-private display recovery; never exposed by the member-bound capability. */
+  readInput(recordId: string): typeof Schema.Json.Type | null {
+    if (this.get(recordId) === null) return null;
+    return decodeJson(this.payload(recordId).input_json);
   }
 
   /** Bounded, home-local terminal notices for the native owner's work loop. */

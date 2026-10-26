@@ -145,12 +145,12 @@ to current grants, the authority fence, or containment.
 
 Local is an explicit ledger home with default ON, like Oyster; Team defaults
 OFF. The Local adapter supplies its native SQLite owner. Containment is owned by
-the Local sandbox integration, not this policy read: use a sandbox whenever one
-is available; its absence does not turn auto-approve OFF. An explicit
-requirement for sandboxed execution is a containment choice, not another
-approval switch. This package does not choose a Local database path, start a
-sandbox, display the one-time uncontained notice, or replace the runtime's
-current-authority check.
+the Local sandbox integration, not this policy read. Sandbox escapes set
+`requireHumanApproval`, so general auto-approve cannot widen a sandboxed
+command. After the Local host verifies a protected direct-argv prefix rule, it
+sets `prefixPolicyApproved` for that one request; the ledger records a policy
+decision and applies it inline through the ordinary authority recheck. The
+ledger does not parse shell text, store prefixes, or let an Agent manage them.
 
 ## Capability-attached visual evidence
 

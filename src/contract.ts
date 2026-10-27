@@ -72,6 +72,14 @@ export const ApprovalRefusalReasonSchema = Schema.Literals([
   "outcome-unknown",
   "identity-conflict",
 ]);
+/** Human explanation for a denied approval; distinct from the typed refusal cause. */
+export const MAX_APPROVAL_DENIAL_NOTE_LENGTH = 512;
+/** Bounded nonempty human feedback; user text, never approval authority. */
+export const ApprovalDenialNoteSchema = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(MAX_APPROVAL_DENIAL_NOTE_LENGTH),
+  Schema.isPattern(/^(?=.*\S)[^\p{Cc}\u2028\u2029]*$/u),
+);
 /** Defensive display limits, not authority to fetch or interpret image content. */
 export const MAX_APPROVAL_EVIDENCE = 4;
 /** Maximum attested PNG byte length in one evidence descriptor. */
@@ -110,6 +118,7 @@ export const ApprovalRecordSchema = Schema.Struct({
     ]),
   ),
   reason: Schema.NullOr(ApprovalRefusalReasonSchema),
+  denialNote: Schema.optionalKey(ApprovalDenialNoteSchema),
   requestedAt: Timestamp,
   expiresAt: Timestamp,
   updatedAt: Timestamp,
@@ -139,6 +148,7 @@ export const ApprovalAnswerInputSchema = Schema.Struct({
   recordId: Identity,
   decision: Schema.Literals(["approve", "deny"]),
   expectedRevision: Revision,
+  denialNote: Schema.optionalKey(ApprovalDenialNoteSchema),
 });
 /** Explicit policy mutation. A false rule narrows a broader true rule. */
 export const AutoApproveInputSchema = Schema.Struct({
@@ -161,6 +171,7 @@ export type AutoApproveInput = typeof AutoApproveInputSchema.Type;
 export type ApprovalRefusal = Readonly<{
   kind: "refused";
   reason: typeof ApprovalRefusalReasonSchema.Type;
+  denialNote?: typeof ApprovalDenialNoteSchema.Type;
 }>;
 /** The member-bound capability. Host authentication supplies the actor. */
 export type Approvals = Readonly<{

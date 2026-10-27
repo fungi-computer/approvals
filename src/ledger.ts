@@ -5,6 +5,7 @@ import {
   ApprovalEvidenceSchema,
   type ApprovalEvidence,
   ApprovalRefusalReasonSchema,
+  ApprovalDenialNoteSchema,
   ApprovalGetInputSchema,
   ApprovalListInputSchema,
   ApprovalAnswerInputSchema,
@@ -22,6 +23,7 @@ import {
 export const ApprovalRefusalSchema = Schema.Struct({
   kind: Schema.Literal("refused"),
   reason: ApprovalRefusalReasonSchema,
+  denialNote: Schema.optionalKey(ApprovalDenialNoteSchema),
 });
 
 /** Native owner of this ledger; the Local runtime supplies its own SQLite owner. */
@@ -374,7 +376,7 @@ export class ApprovalLedger {
         return { kind: "applied", record, output: decodeJson(output) };
       }
       case "denied":
-        return { kind: "refused", reason: record.reason ?? "declined" };
+        return this.deniedResult(record);
       case "expired":
         return { kind: "refused", reason: "expired" };
       case "outcome_unknown":
@@ -505,6 +507,8 @@ export class ApprovalLedger {
   ): Readonly<{ kind: "answered"; record: ApprovalRecord }> | ApprovalRefusal {
     if (!this.eligible(actor))
       return { kind: "refused", reason: "not-eligible" };
+    if (input.decision !== "deny" && input.denialNote !== undefined)
+      return { kind: "refused", reason: "not-eligible" };
     return this.options.owner.transactionSync(() => {
       const record = this.get(input.recordId);
       if (record === null) return { kind: "refused", reason: "not-found" };
@@ -522,8 +526,12 @@ export class ApprovalLedger {
         revision: record.revision + 1,
         updatedAt: this.options.now(),
       };
-      this.save(answered);
-      return { kind: "answered", record: answered };
+      const result =
+        input.decision === "deny" && input.denialNote !== undefined
+          ? { ...answered, denialNote: input.denialNote }
+          : answered;
+      this.save(result);
+      return { kind: "answered", record: result };
     });
   }
 
@@ -730,7 +738,7 @@ export class ApprovalLedger {
         break;
       }
       case "denied":
-        result = { kind: "refused", reason: record.reason ?? "declined" };
+        result = this.deniedResult(record);
         break;
       case "expired":
         result = { kind: "refused", reason: "expired" };
@@ -843,11 +851,7 @@ export class ApprovalLedger {
       }
       if (record.state === "expired")
         return { kind: "refused", reason: "expired" } satisfies ApprovalRefusal;
-      if (record.state === "denied")
-        return {
-          kind: "refused",
-          reason: record.reason ?? "declined",
-        } satisfies ApprovalRefusal;
+      if (record.state === "denied") return this.deniedResult(record);
       if (record.state === "claimed")
         return {
           kind: "refused",
@@ -988,6 +992,16 @@ export class ApprovalLedger {
         return unknown;
       });
     });
+  }
+
+  private deniedResult(record: ApprovalRecord): ApprovalRefusal {
+    const refusal: ApprovalRefusal = {
+      kind: "refused",
+      reason: record.reason ?? "declined",
+    };
+    return record.denialNote === undefined
+      ? refusal
+      : { ...refusal, denialNote: record.denialNote };
   }
 
   private payload(recordId: string) {

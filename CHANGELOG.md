@@ -1,5 +1,15 @@
 # @fungi.computer/approvals
 
+## 0.2.0
+
+### Minor Changes
+
+- Changes since 0.1.0:
+
+  - fix(approvals): bound confirmation and refuse invalid noted approvals
+  - feat(approvals): lead follow-up turns with human denial reason
+  - feat(approval): carry bounded denial feedback and optional rule coverage
+
 ## 0.1.0
 
 ### Minor Changes

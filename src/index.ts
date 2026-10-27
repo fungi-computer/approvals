@@ -1,4 +1,5 @@
 export * from "./contract.js";
+export { denialFeedbackOpening } from "./denial-message.js";
 export {
   ApprovalLedger,
   ApprovalRefusalSchema,

@@ -10,6 +10,8 @@ import { expect, it, onTestFinished } from "vitest";
 import {
   ApprovalLedger,
   ApprovalViewSchema,
+  ApprovalAnswerInputSchema,
+  MAX_APPROVAL_DENIAL_NOTE_LENGTH,
   ApprovalEvidenceSchema,
   MAX_APPROVAL_EVIDENCE,
   MAX_APPROVAL_EVIDENCE_BYTES,
@@ -18,6 +20,7 @@ import {
   DEFAULT_APPROVAL_EXPIRY_MS,
   type ApprovalRequest,
   type ApprovalAnswerer,
+  type ApprovalResultNotice,
   type AutoApproveQuery,
 } from "../src/index.js";
 
@@ -305,6 +308,163 @@ it("the first human answer wins across surfaces; replay never changes it", async
   expect(other.get(answer.recordId)).toMatchObject({
     state: "approved",
     revision: 2,
+  });
+});
+
+it("a person's denial note survives owner reopening and reaches the canonical refusal handoff", async () => {
+  const database = new DatabaseSync(":memory:");
+  onTestFinished(() => {
+    database.close();
+  });
+  const options = {
+    owner: fromNodeSqlite(database),
+    home: { kind: "team" as const, id: "team:one" },
+    now: () => 10,
+  };
+  const ledger = new ApprovalLedger(options);
+  const staged = await ledger.request(action);
+  if (staged.kind !== "record") throw new Error(staged.reason);
+  const note = "use npm, not pnpm";
+  expect(
+    ledger.answer(
+      {
+        recordId: staged.record.recordId,
+        decision: "deny",
+        expectedRevision: staged.record.revision,
+        denialNote: note,
+      },
+      {
+        kind: "human",
+        memberId: "member:owner",
+        role: "owner",
+        actingForAgent: false,
+        mayUseOperation: true,
+      },
+    ),
+  ).toMatchObject({
+    kind: "answered",
+    record: { state: "denied", reason: "declined", denialNote: note },
+  });
+  const reopened = new ApprovalLedger(options);
+  let delivered: ApprovalResultNotice | null = null;
+  await reopened.handoff(staged.record.recordId, (notice) => {
+    delivered = notice;
+    return Promise.resolve({ commandId: "send:one" });
+  });
+  expect(delivered).toMatchObject({
+    record: { state: "denied", denialNote: note },
+    result: { kind: "refused", reason: "declined", denialNote: note },
+  });
+  expect(
+    reopened.answer(
+      {
+        recordId: staged.record.recordId,
+        decision: "deny",
+        expectedRevision: staged.record.revision,
+        denialNote: "different",
+      },
+      {
+        kind: "human",
+        memberId: "member:owner",
+        role: "owner",
+        actingForAgent: false,
+        mayUseOperation: true,
+      },
+    ),
+  ).toEqual({ kind: "refused", reason: "already-answered" });
+});
+
+it("an empty plain denial has no human note in its durable result", async () => {
+  const database = new DatabaseSync(":memory:");
+  onTestFinished(() => {
+    database.close();
+  });
+  const ledger = new ApprovalLedger({
+    owner: fromNodeSqlite(database),
+    home: { kind: "team", id: "team:plain" },
+    now: () => 10,
+  });
+  const staged = await ledger.request(action);
+  if (staged.kind !== "record") throw new Error(staged.reason);
+  ledger.answer(
+    {
+      recordId: staged.record.recordId,
+      decision: "deny",
+      expectedRevision: staged.record.revision,
+    },
+    {
+      kind: "human",
+      memberId: "member:owner",
+      role: "owner",
+      actingForAgent: false,
+      mayUseOperation: true,
+    },
+  );
+  await ledger.handoff(staged.record.recordId, (notice) => {
+    expect(notice.record.denialNote).toBeUndefined();
+    expect(notice.result).toEqual({ kind: "refused", reason: "declined" });
+    return Promise.resolve({ commandId: "send:plain" });
+  });
+});
+
+it("denial notes are bounded single-line human text at the shared answer boundary", () => {
+  const decode = Schema.decodeUnknownSync(ApprovalAnswerInputSchema, {
+    onExcessProperty: "error",
+  });
+  const answer = {
+    recordId: "record:one",
+    decision: "deny",
+    expectedRevision: 1,
+  };
+  expect(
+    decode({ ...answer, denialNote: "use npm, not pnpm" }).denialNote,
+  ).toBe("use npm, not pnpm");
+  for (const denialNote of [
+    "",
+    "  ",
+    "line one\nline two",
+    "line one\rline two",
+    "line one\n",
+    "line one\r",
+    "line one\u2028",
+    "a\u0000b",
+    "a".repeat(MAX_APPROVAL_DENIAL_NOTE_LENGTH + 1),
+  ])
+    expect(() => decode({ ...answer, denialNote })).toThrow();
+});
+
+it("refuses approve-with-note as a typed decision without changing the pending record", async () => {
+  const database = new DatabaseSync(":memory:");
+  onTestFinished(() => {
+    database.close();
+  });
+  const ledger = new ApprovalLedger({
+    owner: fromNodeSqlite(database),
+    home: { kind: "team", id: "team:note-refusal" },
+    now: () => 10,
+  });
+  const staged = await ledger.request(action);
+  if (staged.kind !== "record") throw new Error(staged.reason);
+  expect(
+    ledger.answer(
+      {
+        recordId: staged.record.recordId,
+        expectedRevision: staged.record.revision,
+        decision: "approve",
+        denialNote: "Not approval",
+      },
+      {
+        kind: "human",
+        memberId: "member:owner",
+        role: "owner",
+        actingForAgent: false,
+        mayUseOperation: true,
+      },
+    ),
+  ).toEqual({ kind: "refused", reason: "not-eligible" });
+  expect(ledger.get(staged.record.recordId)).toMatchObject({
+    state: "pending",
+    revision: staged.record.revision,
   });
 });
 

@@ -4,6 +4,8 @@
     "package/README.md",
     "package/dist/contract.d.ts",
     "package/dist/contract.js",
+    "package/dist/denial-message.d.ts",
+    "package/dist/denial-message.js",
     "package/dist/index.d.ts",
     "package/dist/index.js",
     "package/dist/ledger.d.ts",

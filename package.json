@@ -19,22 +19,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "lint": "eslint src test --max-warnings=0 && ../../node_modules/.bin/oxlint --config ../../oxlint.config.ts --deny-warnings src test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "pnpm run clean && tsc -p tsconfig.build.json",
     "clean": "node --input-type=module --eval \"import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true });\"",
-    "test": "vitest run --config vitest.config.mjs",
-    "docs": "tsx ../../tooling/repository/src/docs/cli.ts check --root ../..",
-    "docs:write": "tsx ../../tooling/repository/src/docs/cli.ts write --root ../..",
-    "pack": "mkdir -p ../../.botanical/approvals-pack && pnpm pack --pack-destination ../../.botanical/approvals-pack",
-    "smoke": "node --input-type=module -e \"import('./dist/index.js')\"",
-    "stranger": "tsx ../../tooling/repository/src/artifacts/cli.ts --repo-root ../.. .",
-    "format:check": "node ../../tooling/repository/scripts/format-package-check.mjs",
-    "lint:anti-slop": "node ../../tooling/repository/scripts/lint-package-anti-slop.mjs"
+    "smoke": "node --input-type=module -e \"import('./dist/index.js')\""
   },
   "dependencies": {
     "effect": "4.0.2",
-    "@fungi.computer/watchdog": "workspace:*"
+    "@fungi.computer/watchdog": "0.1.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

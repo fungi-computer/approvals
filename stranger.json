@@ -46,7 +46,7 @@
           {
             "title": "Connect your host",
             "href": "/examples/",
-            "description": "Supply member identity, live authority checks and ordinary result delivery."
+            "description": "Supply member identity, live authority checks and the waiting call's result."
           },
           {
             "title": "Read auto-approve policy",

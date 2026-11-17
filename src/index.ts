@@ -14,6 +14,4 @@ export {
   type ApprovalSubmitHost,
   type ApprovalDispatchCompletion,
   type ApprovalApplyResult,
-  type ApprovalResultNotice,
-  type ApprovalHandoffResult,
 } from "./ledger.js";

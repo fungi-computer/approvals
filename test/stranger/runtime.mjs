@@ -4,13 +4,12 @@ import { ApprovalLedger } from "@fungi.computer/approvals";
 
 // A real packed run: a write is recorded pending, a human member answers it,
 // the approved operation is dispatched exactly once, and its result reaches
-// the requester through one ordinary handoff.
+// the waiting call through its own result.
 const database = new DatabaseSync(":memory:");
 const ledger = new ApprovalLedger({
   owner: fromNodeSqlite(database),
   home: { kind: "team", id: "stranger-team" },
   now: () => 1_000,
-  resultDelivery: { retryDelay: () => 1_000, attemptLimit: 3 },
 });
 
 const dispatched = [];
@@ -65,20 +64,4 @@ if (applied.kind !== "applied" || applied.output.saved !== true)
 await ledger.apply(pending.recordId, host);
 if (dispatched.length !== 1)
   throw new Error("An approved write must dispatch exactly once");
-
-const sent = [];
-const send = (notice) => {
-  sent.push(notice);
-  return Promise.resolve({ commandId: "command-1" });
-};
-const handoff = await ledger.handoff(pending.recordId, send);
-if (handoff.kind !== "delivered" || handoff.commandId !== "command-1")
-  throw new Error("The result must reach the requester as one message");
-await ledger.handoff(pending.recordId, send);
-if (sent.length !== 1)
-  throw new Error("The result must be delivered exactly once");
-if (!/^approval-result:[a-f0-9]{64}$/u.test(sent[0].deliveryId))
-  throw new Error(
-    "The delivery id must use the approval-result receipt format",
-  );
 database.close();

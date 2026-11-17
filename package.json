@@ -1,6 +1,6 @@
 {
   "name": "@fungi.computer/approvals",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "author": "Levi <levi@technomancy.dev>",
   "description": "Durable principal-bound approval records and auto-approve policy",
   "type": "module",
@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "effect": "4.0.2",
-    "@fungi.computer/watchdog": "0.1.3"
+    "@fungi.computer/watchdog": "0.1.4"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

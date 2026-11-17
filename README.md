@@ -62,28 +62,30 @@ policy-approved request inline through the authority recheck.
 ## Examples
 
 The home example stages one pending write using native SQLite. The packed
-consumer in `test/stranger/runtime.mjs` continues through a human answer,
-application and result handoff. It observes one dispatch and one send across
-sequential successful retries; it is not a real Agent transport proof.
+consumer in `test/stranger/runtime.mjs` continues through a human answer and
+application. It observes one dispatch across sequential successful retries; it
+is not a real Agent transport proof.
 
 To integrate those steps, pass `answer` a freshly resolved human member and the
 record's expected revision. Supply `apply` with an `ApprovalApplyHost`:
 `recheck` reads the requester's current authority and fence, and `dispatch`
 calls your existing operation door. Approval does not grant missing authority.
-Finally, `handoff` sends the result through your ordinary message API and
-records its command receipt. Use the notice's stable `deliveryId` for recipient
-deduplication.
+The result belongs to the call that asked: the host that staged the record waits
+for the answer inside its own tool call, applies it there and returns the output
+as that call's result. Nothing is sent as a message.
 
 ## Contract model
 
-A write needing approval returns a typed pending_approval tool result
-immediately with its recordId and description. It does not run and does not
-suspend the Agent turn. On approval the ledger durably claims, rechecks the
-exact fence and requester's current Mycelium authority, dispatches the existing
-host operation at most once, and stores applied/denied/outcome_unknown. Deferred
-results use the existing ordinary Agent new-message path. Auto-approve applies
-inline through the same record. No MuleTool.resume, Watchdog park/wake, stored
-tool suspension, or unsafe execute replay belongs to this model.
+`submit` stages a write needing approval and returns a typed pending_approval
+status with its recordId and description; the host keeps that tool call open
+until the answer. A request staged with `expiresAt` (the waiting call's own
+deadline) never outlives the call: `withdraw` expires an unclaimed record when
+the call is cancelled or ends, and `withdrawWaiting` does so for every unclaimed
+record at native boot. On approval the ledger durably claims, rechecks the exact
+fence and requester's current Mycelium authority, dispatches the existing host
+operation at most once, and stores applied/denied/outcome_unknown. Auto-approve
+applies inline through the same record. No MuleTool.resume, Watchdog park/wake,
+stored tool suspension, or unsafe execute replay belongs to this model.
 
 The member-bound capability exposes approvals.list/get/answer/setAutoApprove.
 Actors and live grants come from the host, never from request bodies. Reads are
@@ -93,9 +95,10 @@ requester authority over an operation.
 Auto-approve matches a module (or all modules) and access class write/external,
 optionally for one Agent. ON includes irreversible actions, still records the
 decision, and never overrides revoked authority. Local and the solo Oyster owner
-default ON; Teams default OFF. Only the Oyster owner answers on an Oyster.
-Pending approval expires after 24 hours by default; owner/admin configuration
-may change that duration. Expiry never approves.
+default ON; Teams default OFF. Only the Oyster owner answers on an Oyster. A
+request with no `expiresAt` expires after 24 hours (the Oyster home, whose host
+applies approved records from its own work loop). A call-owned request expires
+with its call. Expiry never approves.
 
 ## Current implementation boundary
 
@@ -108,31 +111,18 @@ bounded batches; the native host must call it only at boot, never during a live
 dispatch.
 
 ledger.capability({ actor, decision }) binds the four public methods. The host
-must supply fresh member/operation facts on every call and actual durable
-apply/handoff work after a decision; there is no success-shaped default hook.
-List reads are bounded to at most 100 records with a continuation cursor.
-Request bodies cannot select their actor. Policy is persisted by home and
-Agent/module/access family.
+must supply fresh member/operation facts on every call and actual durable apply
+work after a decision; there is no success-shaped default hook. List reads are
+bounded to at most 100 records with a continuation cursor. Request bodies cannot
+select their actor. Policy is persisted by home and Agent/module/access family.
 
-Deferred, Agent-Session-linked requests also create their result-delivery intent
-in the request transaction. pendingHandoffs returns at most 100 home-local,
-terminal notices (including requests whose deadline has passed). handoff sends
-with one stable recipient-side request identity and stores the real Session
-command receipt. A lost acknowledgement retries that message identity, not the
-effect; inline policy approval creates no extra Agent turn. Private input bytes
-are never notification cargo. The host owns current recipient admission and safe
-ordinary-message presentation of the result.
+Private input bytes are never part of a result sent anywhere: a waiting call
+receives the operation's own output or a typed refusal. The Local and Hub hosts
+resolve the waiting call from their own answer hook; the ledger keeps one claim
+and one effect attempt per record, so a duplicate waiter cannot dispatch twice.
 
-The consumer test uses the public Shiitake memory host with borrowed native
-SQLite owners, loses an acknowledgement after session.send accepts, reopens both
-databases and owners, and observes one new-message turn with the same command
-identity. This is real Session/storage component proof, not a deployed home,
-transport-loss drill or a full-host security law.
-
-Host integration is still in progress: the native Team/Oyster compositions,
-ordinary new-message handoff and configurable expiry are not yet wired. The
-current store uses the 24-hour default. Store tests and the page/RPC consumer
-fixture do not establish those production behaviors or the ten full-host laws.
+Store tests and the page/RPC consumer fixture do not establish the production
+behaviors of the hosts or the ten full-host laws.
 
 ## Host admission policy read
 

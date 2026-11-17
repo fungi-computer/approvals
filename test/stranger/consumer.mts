@@ -9,10 +9,8 @@ import {
   type ApprovalAnswerer,
   type ApprovalApplyHost,
   type ApprovalApplyResult,
-  type ApprovalHandoffResult,
   type ApprovalHome,
   type ApprovalRequest,
-  type ApprovalResultNotice,
   type PendingApproval,
 } from "@fungi.computer/approvals";
 
@@ -21,7 +19,6 @@ const ledger: ApprovalLedger = new ApprovalLedger({
   owner: fromNodeSqlite(new DatabaseSync(":memory:")),
   home,
   now: () => 1,
-  resultDelivery: { retryDelay: () => 1, attemptLimit: 3 },
 });
 const request: ApprovalRequest = {
   requester: {
@@ -56,14 +53,8 @@ const submitted: Promise<PendingApproval | ApprovalApplyResult> = ledger.submit(
   host,
 );
 const applied: Promise<ApprovalApplyResult> = ledger.apply("record", host);
-const handoff: Promise<ApprovalHandoffResult> = ledger.handoff(
-  "record",
-  (notice: ApprovalResultNotice) =>
-    Promise.resolve({ commandId: notice.deliveryId }),
-);
-const undeliverable: ApprovalHandoffResult = { kind: "undeliverable" };
 const pendingFields = Object.keys(PendingApprovalSchema.fields);
 const refusalFields = Object.keys(ApprovalRefusalSchema.fields);
 const viewFields = Object.keys(ApprovalViewSchema.fields);
-void { answerer, expiry, submitted, applied, handoff, undeliverable };
+void { answerer, expiry, submitted, applied };
 void { pendingFields, refusalFields, viewFields };

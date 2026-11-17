@@ -43,12 +43,16 @@ export type ApprovalRequest = Readonly<{
   requester: ApprovalRecord["requester"];
   module: string;
   operation: string;
+  /** Display copy from the admitted App catalog; never inferred from IDs. */
+  app?: ApprovalRecord["description"]["app"];
   access: ApprovalRecord["access"];
   reversibility: ApprovalRecord["reversibility"];
   authorityFence: string;
   /** Persisted turn/tool identity and operation ordinal; never random on retry. */
   idempotencyKey: string;
   inputJson: string;
+  /** The waiting call's own deadline: the record never outlives the call that asked. */
+  expiresAt?: number;
   /** Host-only containment escalation: a general auto-approve rule cannot bypass the sandbox. */
   requireHumanApproval?: boolean;
   /** Host-attested matching command-prefix policy; independent of the general auto-approve switch. */
@@ -110,7 +114,7 @@ export type ApprovalSubmitHost = ApprovalApplyHost &
   Readonly<{
     evidence?: ApprovalEvidence;
   }>;
-/** Private result for inline tool output or ordinary deferred new-message delivery. */
+/** The result of applying one approved record. */
 export type ApprovalApplyResult =
   | Readonly<{
       kind: "applied";
@@ -118,29 +122,6 @@ export type ApprovalApplyResult =
       output: typeof Schema.Json.Type;
     }>
   | ApprovalRefusal;
-
-/** Deferred result cargo; stored request input is not a field on this port. */
-export type ApprovalResultNotice = Readonly<{
-  deliveryId: string;
-  record: ApprovalRecord;
-  result: ApprovalApplyResult;
-}>;
-/** Ordinary new-message receipt, explicit no-delivery result, or typed refusal. */
-export type ApprovalHandoffResult =
-  | Readonly<{ kind: "delivered"; commandId: string }>
-  | Readonly<{ kind: "not-required" }>
-  /** The home's attempt limit was reached; the decided record is kept. */
-  | Readonly<{ kind: "undeliverable" }>
-  | ApprovalRefusal;
-
-/** An unguessable recipient idempotency key; never part of any record view. */
-function mintDeliveryId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return (
-    "approval-result:" +
-    [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")
-  );
-}
 
 /** The initial owner-controlled wait duration; passing the deadline never approves. */
 export const DEFAULT_APPROVAL_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -181,16 +162,6 @@ export class ApprovalLedger {
       now: () => number;
       /** Host-private dispatch target, committed in the same SQLite transaction as the record. */
       persistIntent?: (record: ApprovalRecord) => undefined;
-      /**
-       * Present when this home's wake sends result messages: its wake then
-       * covers undelivered results, and a failed send waits retryDelay(attempt)
-       * from the home's existing delivery policy before the next try. The
-       * attemptLimit-th failure makes the result undeliverable: no more wakes.
-       */
-      resultDelivery?: Readonly<{
-        retryDelay: (attempt: number) => number;
-        attemptLimit: number;
-      }>;
     }>,
   ) {
     this.homeKey = JSON.stringify([options.home.kind, options.home.id]);
@@ -205,12 +176,6 @@ export class ApprovalLedger {
     );
     options.owner.sql.exec(
       "CREATE TABLE IF NOT EXISTS approval_payloads (home_key TEXT NOT NULL, record_id TEXT NOT NULL, input_json TEXT NOT NULL, output_json TEXT, PRIMARY KEY (home_key, record_id))",
-    );
-    options.owner.sql.exec(
-      "CREATE TABLE IF NOT EXISTS approval_handoffs (home_key TEXT NOT NULL, record_id TEXT NOT NULL, delivery_id TEXT NOT NULL, command_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER, undeliverable_at INTEGER, PRIMARY KEY (home_key, record_id))",
-    );
-    options.owner.sql.exec(
-      "CREATE INDEX IF NOT EXISTS approval_handoffs_by_receipt ON approval_handoffs (home_key, command_id, record_id)",
     );
   }
 
@@ -350,7 +315,7 @@ export class ApprovalLedger {
     // Only this call's own policy approval applies inline. Every other
     // approved record is applied by the home's work loop, never by a retry.
     if (staged.created && record.state === "approved")
-      return this.applyInline(record.recordId, host);
+      return this.apply(record.recordId, host);
     return this.outcome(record);
   }
 
@@ -367,7 +332,7 @@ export class ApprovalLedger {
           description: record.description,
         };
       case "applied": {
-        // A human-approved result reaches the requester as its own message.
+        // A human-approved result went to the call that waited for it.
         if (record.by?.kind !== "policy")
           return { kind: "refused", reason: "already-answered" };
         const output = this.payload(record.recordId).output_json;
@@ -446,6 +411,11 @@ export class ApprovalLedger {
             module: request.module,
             access: request.access,
           }));
+      const description = {
+        title: (request.module + "." + request.operation).slice(0, 512),
+        inputBytes: bytes.length,
+        inputSha256,
+      };
       const record = Schema.decodeUnknownSync(ApprovalRecordSchema, {
         onExcessProperty: "error",
       })({
@@ -454,11 +424,10 @@ export class ApprovalLedger {
         module: request.module,
         operation: request.operation,
         access: request.access,
-        description: {
-          title: (request.module + "." + request.operation).slice(0, 512),
-          inputBytes: bytes.length,
-          inputSha256,
-        },
+        description:
+          request.app === undefined
+            ? description
+            : { ...description, app: request.app },
         ...attachments,
         authorityFence: request.authorityFence,
         reversibility: request.reversibility,
@@ -466,7 +435,7 @@ export class ApprovalLedger {
         by: autoApproved ? { kind: "policy" } : null,
         reason: null,
         requestedAt: now,
-        expiresAt: now + DEFAULT_APPROVAL_EXPIRY_MS,
+        expiresAt: request.expiresAt ?? now + DEFAULT_APPROVAL_EXPIRY_MS,
         updatedAt: now,
         revision: 1,
       });
@@ -483,19 +452,6 @@ export class ApprovalLedger {
         recordId,
         request.inputJson,
       );
-      // Only a waiting, host-attested Agent Session needs an ordinary later message.
-      // Policy-approved inline calls must not manufacture another Agent turn.
-      if (
-        !autoApproved &&
-        record.requester.agentId !== null &&
-        record.requester.sessionId !== null
-      )
-        this.options.owner.sql.exec(
-          "INSERT INTO approval_handoffs (home_key, record_id, delivery_id) VALUES (?, ?, ?)",
-          this.homeKey,
-          recordId,
-          mintDeliveryId(),
-        );
       return { kind: "record", record, created: true };
     });
   }
@@ -602,6 +558,36 @@ export class ApprovalLedger {
     );
   }
 
+  /** Withdraw an unclaimed call; a claimed effect must retain its outcome record. */
+  withdraw(recordId: string): void {
+    this.options.owner.transactionSync(() => {
+      const record = this.get(recordId);
+      if (record?.state !== "pending" && record?.state !== "approved") return;
+      this.save({
+        ...record,
+        state: "expired",
+        reason: "expired",
+        updatedAt: this.options.now(),
+        revision: record.revision + 1,
+      });
+    });
+  }
+
+  /** Native boot only: a prior owner's waiting calls no longer exist. */
+  withdrawWaiting(): number {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({ record_id: ApprovalRecordSchema.fields.recordId }),
+    );
+    const rows = this.options.owner.sql
+      .exec(
+        "SELECT record_id FROM approval_records WHERE home_key = ? AND json_extract(record_json, '$.state') IN ('pending', 'approved') ORDER BY record_id LIMIT 100",
+        this.homeKey,
+      )
+      .toArray();
+    for (const row of rows) this.withdraw(decode(row).record_id);
+    return rows.length;
+  }
+
   /** Expire one bounded home-local quantum without a member read or an approval. */
   expirePending(): void {
     const decode = Schema.decodeUnknownSync(
@@ -634,23 +620,7 @@ export class ApprovalLedger {
       }),
     );
     const effects = decodeWake(row).wake_at;
-    if (this.options.resultDelivery === undefined) return effects;
-    const now = this.options.now();
-    const results = decodeWake(
-      this.options.owner.sql
-        .exec(
-          "SELECT MIN(COALESCE(h.next_attempt_at, ?)) AS wake_at FROM approval_handoffs h JOIN approval_records r ON r.home_key = h.home_key AND r.record_id = h.record_id WHERE h.home_key = ? AND h.command_id IS NULL AND h.undeliverable_at IS NULL AND (json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown') OR (json_extract(r.record_json, '$.state') = 'pending' AND json_extract(r.record_json, '$.expiresAt') <= ?))",
-          now,
-          this.homeKey,
-          now,
-        )
-        .toArray()[0],
-    ).wake_at;
-    return effects === null
-      ? results
-      : results === null
-        ? effects
-        : Math.min(effects, results);
+    return effects;
   }
 
   /** Bounded approved work for the native owner; selection never claims or dispatches. */
@@ -673,164 +643,20 @@ export class ApprovalLedger {
     return decodeJson(this.payload(recordId).input_json);
   }
 
-  /** Bounded, home-local terminal notices for the native owner's work loop. */
-  pendingHandoffs(): readonly string[] {
-    const decode = Schema.decodeUnknownSync(
-      Schema.Struct({
-        record_id: ApprovalRecordSchema.fields.recordId,
-      }),
-    );
-    return this.options.owner.sql
-      .exec(
-        "SELECT h.record_id FROM approval_handoffs h JOIN approval_records r ON r.home_key = h.home_key AND r.record_id = h.record_id WHERE h.home_key = ? AND h.command_id IS NULL AND h.undeliverable_at IS NULL AND (h.next_attempt_at IS NULL OR h.next_attempt_at <= ?) AND (json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown') OR (json_extract(r.record_json, '$.state') = 'pending' AND json_extract(r.record_json, '$.expiresAt') <= ?)) ORDER BY h.record_id LIMIT 100",
-        this.homeKey,
-        this.options.now(),
-        this.options.now(),
-      )
-      .toArray()
-      .map((row) => decode(row).record_id);
-  }
-
   /**
-   * Retry only the ordinary message, with the same recipient-side idempotency key.
-   * A send rejection leaves the intent pending; it never reopens effect execution.
-   * The host must return the real Session acceptance, not a success-shaped placeholder.
-   */
-  async handoff(
-    recordId: string,
-    send: (
-      notice: ApprovalResultNotice,
-    ) => Promise<Readonly<{ commandId: string }>>,
-  ): Promise<ApprovalHandoffResult> {
-    const record = this.get(recordId);
-    if (record === null) return { kind: "refused", reason: "not-found" };
-    const receipt = () => {
-      const raw = this.options.owner.sql
-        .exec(
-          "SELECT command_id, delivery_id, attempts, undeliverable_at FROM approval_handoffs WHERE home_key = ? AND record_id = ?",
-          this.homeKey,
-          recordId,
-        )
-        .toArray()[0];
-      return raw === undefined
-        ? null
-        : Schema.decodeUnknownSync(
-            Schema.Struct({
-              command_id: Schema.NullOr(Schema.String),
-              delivery_id: Schema.String,
-              attempts: Schema.Int,
-              undeliverable_at: Schema.NullOr(Schema.Int),
-            }),
-          )(raw);
-    };
-    const previous = receipt();
-    if (previous === null) return { kind: "not-required" };
-    if (previous.command_id !== null)
-      return { kind: "delivered", commandId: previous.command_id };
-    if (previous.undeliverable_at !== null) return { kind: "undeliverable" };
-    let result: ApprovalApplyResult;
-    switch (record.state) {
-      case "applied": {
-        const output = this.payload(recordId).output_json;
-        if (output === null)
-          throw new Error("Applied approval has no recorded output");
-        result = { kind: "applied", record, output: decodeJson(output) };
-        break;
-      }
-      case "denied":
-        result = this.deniedResult(record);
-        break;
-      case "expired":
-        result = { kind: "refused", reason: "expired" };
-        break;
-      case "outcome_unknown":
-        result = { kind: "refused", reason: "outcome-unknown" };
-        break;
-      case "claimed":
-        return { kind: "refused", reason: "in-flight" };
-      case "requested":
-      case "pending":
-      case "approved":
-        return { kind: "refused", reason: "pending" };
-    }
-    let accepted: Readonly<{ commandId: string }>;
-    try {
-      // The minted id is the recipient's idempotency key on every retry.
-      accepted = await send({
-        deliveryId: previous.delivery_id,
-        record,
-        result,
-      });
-    } catch (cause) {
-      const delivery = this.options.resultDelivery;
-      if (delivery !== undefined) {
-        const attempt = previous.attempts + 1;
-        // An absent or erased requester never accepts: stop, keep the record.
-        if (attempt >= delivery.attemptLimit) {
-          this.options.owner.sql.exec(
-            "UPDATE approval_handoffs SET attempts = ?, next_attempt_at = NULL, undeliverable_at = ? WHERE home_key = ? AND record_id = ? AND command_id IS NULL",
-            attempt,
-            this.options.now(),
-            this.homeKey,
-            recordId,
-          );
-          return { kind: "undeliverable" };
-        }
-        this.options.owner.sql.exec(
-          "UPDATE approval_handoffs SET attempts = ?, next_attempt_at = ? WHERE home_key = ? AND record_id = ? AND command_id IS NULL",
-          attempt,
-          this.options.now() + delivery.retryDelay(attempt),
-          this.homeKey,
-          recordId,
-        );
-      }
-      throw cause;
-    }
-    return this.options.owner.transactionSync(() => {
-      const current = receipt();
-      if (current === null)
-        throw new Error("Approval result delivery intent is missing");
-      if (
-        current.command_id !== null &&
-        current.command_id !== accepted.commandId
-      )
-        throw new Error("Approval result delivery identity conflicted");
-      this.options.owner.sql.exec(
-        "UPDATE approval_handoffs SET command_id = ? WHERE home_key = ? AND record_id = ? AND command_id IS NULL",
-        accepted.commandId,
-        this.homeKey,
-        recordId,
-      );
-      return { kind: "delivered", commandId: accepted.commandId };
-    });
-  }
-
-  /**
-   * The home's work loop: only a durable approved record claims the existing
-   * host operation, and its result always reaches a waiting Agent as a message.
+   * Claim and apply one approved record exactly once. A waiting call applies
+   * its own record; the native owner's work loop applies the rest.
    */
   apply(
     recordId: string,
     host: ApprovalApplyHost,
   ): Promise<ApprovalApplyResult> {
-    return this.run(recordId, host, true);
-  }
-
-  /**
-   * Apply the caller's own just-staged policy approval inside its live tool
-   * call; that call's result is the outcome, so no later message is owed.
-   */
-  applyInline(
-    recordId: string,
-    host: ApprovalApplyHost,
-  ): Promise<ApprovalApplyResult> {
-    return this.run(recordId, host, false);
+    return this.run(recordId, host);
   }
 
   private async run(
     recordId: string,
     host: ApprovalApplyHost,
-    deferred: boolean,
   ): Promise<ApprovalApplyResult> {
     const claim = this.options.owner.transactionSync(() => {
       const record = this.get(recordId);
@@ -872,18 +698,6 @@ export class ApprovalLedger {
         revision: record.revision + 1,
       };
       this.save(claimed);
-      // A deferred apply (even one policy approved) answers no live tool call.
-      if (
-        deferred &&
-        claimed.requester.agentId !== null &&
-        claimed.requester.sessionId !== null
-      )
-        this.options.owner.sql.exec(
-          "INSERT OR IGNORE INTO approval_handoffs (home_key, record_id, delivery_id) VALUES (?, ?, ?)",
-          this.homeKey,
-          recordId,
-          mintDeliveryId(),
-        );
       return { kind: "claimed", record: claimed, input } satisfies Readonly<{
         kind: "claimed";
         record: ApprovalRecord;

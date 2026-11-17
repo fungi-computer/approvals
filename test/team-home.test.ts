@@ -181,10 +181,9 @@ it("a retried submit after a human approval never applies or returns output", as
     reason: "already-answered",
   });
   expect(dispatch).toHaveBeenCalledOnce();
-  expect(ledger.pendingHandoffs()).toEqual([pending.recordId]);
 });
 
-it("a policy-approved record applied by the work loop still tells its Agent once", async () => {
+it("a policy-approved record applied by the work loop applies once", async () => {
   const { ledger } = teamLedger();
   expect(
     ledger.setAutoApprove(
@@ -203,7 +202,6 @@ it("a policy-approved record applied by the work loop still tells its Agent once
     state: "approved",
     by: { kind: "policy" },
   });
-  expect(ledger.pendingHandoffs()).toEqual([]);
   const host: ApprovalApplyHost = {
     recheck: () =>
       Promise.resolve({ kind: "authorized", authorityFence: "fence-1" }),
@@ -213,21 +211,9 @@ it("a policy-approved record applied by the work loop still tells its Agent once
   expect(await ledger.apply(staged.record.recordId, host)).toMatchObject({
     kind: "applied",
   });
-  expect(ledger.pendingHandoffs()).toEqual([staged.record.recordId]);
-  const send = vi.fn(() => Promise.resolve({ commandId: "command-result" }));
-  expect(await ledger.handoff(staged.record.recordId, send)).toEqual({
-    kind: "delivered",
-    commandId: "command-result",
-  });
-  expect(await ledger.handoff(staged.record.recordId, send)).toEqual({
-    kind: "delivered",
-    commandId: "command-result",
-  });
-  expect(send).toHaveBeenCalledOnce();
-  expect(ledger.pendingHandoffs()).toEqual([]);
 });
 
-it("an inline policy apply never manufactures a result message", async () => {
+it("an inline policy apply returns the output in the call", async () => {
   const { ledger } = teamLedger();
   ledger.setAutoApprove(
     {
@@ -243,122 +229,8 @@ it("an inline policy apply never manufactures a result message", async () => {
     dispatch: () =>
       Promise.resolve({ kind: "completed", output: { saved: true } }),
   };
-  expect(await ledger.submit(request, host)).toMatchObject({ kind: "applied" });
-  expect(ledger.pendingHandoffs()).toEqual([]);
-});
-
-function pendingTeamLedger(clock: { now: number }) {
-  const database = new DatabaseSync(":memory:");
-  onTestFinished(() => {
-    database.close();
+  expect(await ledger.submit(request, host)).toMatchObject({
+    kind: "applied",
+    output: { saved: true },
   });
-  const delays: number[] = [];
-  const ledger = new ApprovalLedger({
-    owner: fromNodeSqlite(database),
-    home: { kind: "team", id: "team-a" },
-    now: () => clock.now,
-    resultDelivery: {
-      retryDelay: (attempt) => {
-        delays.push(attempt);
-        return 1_000 * attempt;
-      },
-      attemptLimit: 3,
-    },
-  });
-  return { ledger, delays };
-}
-
-async function deniedRecord(ledger: ApprovalLedger) {
-  const host: ApprovalApplyHost = {
-    recheck: () => Promise.reject(new Error("never applied")),
-    dispatch: () => Promise.reject(new Error("never dispatched")),
-  };
-  const pending = await ledger.submit(request, host);
-  if (pending.kind !== "pending_approval") throw new Error("not pending");
-  expect(
-    ledger.answer(
-      { recordId: pending.recordId, decision: "deny", expectedRevision: 1 },
-      {
-        kind: "human",
-        memberId: "owner-1",
-        role: "owner",
-        actingForAgent: false,
-        mayUseOperation: true,
-      },
-    ),
-  ).toMatchObject({ kind: "answered" });
-  return pending.recordId;
-}
-
-it("a failed result send schedules its retry from the home's policy and then delivers once", async () => {
-  const clock = { now: 1_000 };
-  const { ledger, delays } = pendingTeamLedger(clock);
-  const recordId = await deniedRecord(ledger);
-  expect(ledger.pendingHandoffs()).toEqual([recordId]);
-  expect(ledger.nextWakeAt()).toBe(clock.now);
-  const send = vi
-    .fn<Parameters<ApprovalLedger["handoff"]>[1]>()
-    .mockRejectedValueOnce(new Error("Session busy"))
-    .mockResolvedValue({ commandId: "command-result" });
-  await expect(ledger.handoff(recordId, send)).rejects.toThrow("Session busy");
-  expect(delays).toEqual([1]);
-  expect(ledger.pendingHandoffs()).toEqual([]);
-  expect(ledger.nextWakeAt()).toBe(2_000);
-  clock.now = 2_000;
-  expect(ledger.pendingHandoffs()).toEqual([recordId]);
-  expect(await ledger.handoff(recordId, send)).toEqual({
-    kind: "delivered",
-    commandId: "command-result",
-  });
-  expect(send).toHaveBeenCalledTimes(2);
-  expect(ledger.nextWakeAt()).toBeNull();
-});
-
-it("a result delivery id is minted once, unguessable and never shown", async () => {
-  const clock = { now: 1_000 };
-  const { ledger } = pendingTeamLedger(clock);
-  const recordId = await deniedRecord(ledger);
-  const ids: string[] = [];
-  const send = vi.fn<Parameters<ApprovalLedger["handoff"]>[1]>((notice) => {
-    ids.push(notice.deliveryId);
-    return ids.length === 1
-      ? Promise.reject(new Error("Session busy"))
-      : Promise.resolve({ commandId: "command-result" });
-  });
-  await expect(ledger.handoff(recordId, send)).rejects.toThrow();
-  clock.now = 10_000;
-  await ledger.handoff(recordId, send);
-  expect(ids[0]).toBe(ids[1]);
-  expect(ids[0]).not.toContain(recordId);
-  expect(ids[0]).toMatch(/^approval-result:[a-f0-9]{64}$/);
-  expect(JSON.stringify(ledger.get(recordId))).not.toContain(
-    ids[0]?.slice("approval-result:".length),
-  );
-});
-
-it("a result that cannot be delivered becomes undeliverable at the home's attempt limit, never retried again", async () => {
-  const clock = { now: 1_000 };
-  const { ledger } = pendingTeamLedger(clock);
-  const recordId = await deniedRecord(ledger);
-  // The requester Session or Agent is gone: every send is refused.
-  const send = vi
-    .fn<Parameters<ApprovalLedger["handoff"]>[1]>()
-    .mockRejectedValue(new Error("door:unavailable"));
-  await expect(ledger.handoff(recordId, send)).rejects.toThrow();
-  clock.now = 10_000;
-  await expect(ledger.handoff(recordId, send)).rejects.toThrow();
-  clock.now = 20_000;
-  expect(await ledger.handoff(recordId, send)).toEqual({
-    kind: "undeliverable",
-  });
-  expect(send).toHaveBeenCalledTimes(3);
-  // No further wake or due work; the decided record itself is kept.
-  expect(ledger.nextWakeAt()).toBeNull();
-  clock.now = 1_000_000;
-  expect(ledger.pendingHandoffs()).toEqual([]);
-  expect(await ledger.handoff(recordId, send)).toEqual({
-    kind: "undeliverable",
-  });
-  expect(send).toHaveBeenCalledTimes(3);
-  expect(ledger.get(recordId)?.state).toBe("denied");
 });

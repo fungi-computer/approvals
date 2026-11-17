@@ -1,5 +1,19 @@
 # @fungi.computer/approvals
 
+## 0.2.4
+
+### Patch Changes
+
+- Changes since 0.2.3:
+
+  - fix(approvals): align App display metadata with its catalog
+  - fix(approvals): isolate waiting calls and name App write permissions
+  - fix(hub): answer a waiting App write in its own call
+  - fix(local): return approval outcomes in the originating tool call
+
+- Updated dependencies
+  - @fungi.computer/watchdog@0.1.4
+
 ## 0.2.3
 
 ### Patch Changes

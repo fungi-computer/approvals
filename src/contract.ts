@@ -34,6 +34,19 @@ export const ApprovalRequesterSchema = Schema.Struct({
 /** A renderer sees metadata and a byte digest, never the proposed input. */
 export const ApprovalDescriptionSchema = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)),
+  /** Catalog-authored App copy, not identity or authorization. */
+  app: Schema.optionalKey(
+    Schema.Struct({
+      displayName: Schema.String.check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(80),
+      ),
+      operationLabel: Schema.String.check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(1000),
+      ),
+    }),
+  ),
   inputBytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   inputSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
 });

@@ -1,20 +1,23 @@
 # Approvals
 
-One durable approval record, many renderers. Mycelium owns operation admission;
-this package owns the decision lifecycle beside it. Team storage on the Hub and
-the Oyster host supply the homes. Bonsai is not a ledger home.
+Approvals keeps a record of each action an AI agent wants to take that needs a
+person's OK, so any screen can show it and an approved action runs exactly once.
 
-## Install
+```mermaid
+flowchart LR
+  Agent[Agent proposes a write] --> Ledger[Approvals ledger]
+  Ledger --> Person[A member answers]
+  Person --> Ledger
+  Ledger -->|rechecks authority| Host[Your host runs the operation]
+```
+
+## Quick start
+
+Install it:
 
 ```sh
 npm install @fungi.computer/approvals @fungi.computer/watchdog
 ```
-
-Approvals ships ESM and TypeScript declarations from its root entrypoint. The
-example below uses Node.js 24's native SQLite adapter from Watchdog. Your host
-owns the database, requester identity, current grants and dispatch.
-
-## Quick start
 
 Stage a proposed write without executing it. This disposable in-memory example
 prints `pending`; use a persistent, host-owned database for real requests.
@@ -58,6 +61,45 @@ to trust from an Agent or browser. Keep the same idempotency key when retrying
 the same operation. `request` stages a record and records the home's
 auto-approve decision without dispatching. `submit` additionally applies a newly
 policy-approved request inline through the authority recheck.
+
+## Common tasks
+
+### Stage a write for approval
+
+`request` stages the record without running it. See the Quick start.
+
+### Answer a request and apply it
+
+Pass `answer` a freshly resolved member and the expected revision, then supply
+an apply host. See Examples.
+
+### Turn on auto-approve
+
+Auto-approve matches a module and access class. Read how the host reads it in
+[Host admission policy read](#host-admission-policy-read).
+
+### Attach screenshots for the reviewer
+
+A record can carry up to four image descriptors. See
+[Capability-attached visual evidence](#capability-attached-visual-evidence).
+
+## Reference
+
+### Overview
+
+One durable approval record, many renderers. Mycelium owns operation admission;
+this package owns the decision lifecycle beside it. Team storage on the Hub and
+the Oyster host supply the homes. Bonsai is not a ledger home.
+
+## Install
+
+```sh
+npm install @fungi.computer/approvals @fungi.computer/watchdog
+```
+
+Approvals ships ESM and TypeScript declarations from its root entrypoint. The
+example below uses Node.js 24's native SQLite adapter from Watchdog. Your host
+owns the database, requester identity, current grants and dispatch.
 
 ## Examples
 

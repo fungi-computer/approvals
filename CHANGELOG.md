@@ -1,5 +1,12 @@
 # @fungi.computer/approvals
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @fungi.computer/watchdog@0.1.5
+
 ## 0.2.4
 
 ### Patch Changes

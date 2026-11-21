@@ -1579,3 +1579,83 @@ it("readInput recovers a recorded request's input for host display and is null f
   });
   expect(ledger.readInput("approval_missing")).toBeNull();
 });
+
+it("a Team App retry cannot ask again for an identical write whose approved dispatch is uncertain", async () => {
+  const database = new DatabaseSync(":memory:");
+  onTestFinished(() => {
+    database.close();
+  });
+  const ledger = new ApprovalLedger({
+    owner: fromNodeSqlite(database),
+    home: { kind: "team", id: "retry-team" },
+    now: () => 10,
+  });
+  const request = {
+    ...action,
+    app: { displayName: "Inkcap", operationLabel: "Save a file" },
+  };
+  const staged = await ledger.request(request);
+  if (staged.kind !== "record") throw new Error("Approval was not staged");
+  const answer = ledger.answer(
+    {
+      recordId: staged.record.recordId,
+      expectedRevision: staged.record.revision,
+      decision: "approve",
+    },
+    {
+      kind: "human",
+      memberId: "member-one",
+      role: "owner",
+      actingForAgent: false,
+      mayUseOperation: true,
+    },
+  );
+  expect(answer.kind).toBe("answered");
+  expect(
+    await ledger.apply(staged.record.recordId, {
+      recheck: () =>
+        Promise.resolve({
+          kind: "authorized",
+          authorityFence: request.authorityFence,
+        }),
+      dispatch: () => Promise.reject(new Error("Lost write reply")),
+    }),
+  ).toEqual({ kind: "refused", reason: "outcome-unknown" });
+  const restarted = new ApprovalLedger({
+    owner: fromNodeSqlite(database),
+    home: { kind: "team", id: "retry-team" },
+    now: () => 10,
+  });
+  const retried = await restarted.request({
+    ...request,
+    idempotencyKey: "next-tool",
+  });
+  expect(retried).toMatchObject({
+    kind: "record",
+    created: false,
+    record: { recordId: staged.record.recordId, state: "outcome_unknown" },
+  });
+  // A changed request or authority is separately reviewable, as is another Session.
+  for (const [index, change] of [
+    { inputJson: '{"text":"different"}' },
+    { authorityFence: "grant-generation:2" },
+    { operation: "notes.other" },
+    { module: "app:other" },
+    { requester: { ...request.requester, sessionId: "session:two" } },
+    {
+      requester: {
+        ...request.requester,
+        principalId: "agent:other",
+        agentId: "other",
+      },
+    },
+  ].entries()) {
+    expect(
+      await ledger.request({
+        ...request,
+        ...change,
+        idempotencyKey: `next-tool-${String(index)}`,
+      }),
+    ).toMatchObject({ kind: "record", created: true });
+  }
+});

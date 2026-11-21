@@ -1,5 +1,14 @@
 # @fungi.computer/approvals
 
+## 0.2.6
+
+### Patch Changes
+
+- Changes since 0.2.5:
+
+  - fix(inkcap): retain folder creation causes through refusal rows
+  - fix(inkcap): preserve missing-folder writes and failed approval outcomes
+
 ## 0.2.5
 
 ### Patch Changes

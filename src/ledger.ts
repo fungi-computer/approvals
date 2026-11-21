@@ -402,6 +402,9 @@ export class ApprovalLedger {
           return { kind: "refused", reason: "identity-conflict" };
         return { kind: "record", record: existing, created: false };
       }
+      const uncertain = this.uncertainAppWrite(request, inputSha256);
+      if (uncertain !== null)
+        return { kind: "record", record: uncertain, created: false };
       const now = this.options.now();
       const autoApproved =
         request.prefixPolicyApproved === true ||
@@ -454,6 +457,36 @@ export class ApprovalLedger {
       );
       return { kind: "record", record, created: true };
     });
+  }
+
+  /** A fresh tool identity cannot authorize repeating an uncertain App write. */
+  private uncertainAppWrite(
+    request: ApprovalRequest,
+    inputSha256: string,
+  ): ApprovalRecord | null {
+    if (
+      this.options.home.kind !== "team" ||
+      request.app === undefined ||
+      request.requester.sessionId === null
+    )
+      return null;
+    const previous = this.options.owner.sql
+      .exec(
+        "SELECT record_json FROM approval_records WHERE home_key = ? AND json_extract(record_json, '$.state') = 'outcome_unknown' AND json_extract(record_json, '$.requester.principalId') = ? AND json_extract(record_json, '$.requester.agentId') IS ? AND json_extract(record_json, '$.requester.sessionId') = ? AND json_extract(record_json, '$.module') = ? AND json_extract(record_json, '$.operation') = ? AND json_extract(record_json, '$.access') = ? AND json_extract(record_json, '$.authorityFence') = ? AND json_extract(record_json, '$.description.inputSha256') = ? LIMIT 1",
+        this.homeKey,
+        request.requester.principalId,
+        request.requester.agentId,
+        request.requester.sessionId,
+        request.module,
+        request.operation,
+        request.access,
+        request.authorityFence,
+        inputSha256,
+      )
+      .toArray()[0];
+    return previous === undefined
+      ? null
+      : decodeRecord(decodeRow(previous).record_json);
   }
 
   /** Answering is revision-pinned and never changes the requester's underlying grants. */

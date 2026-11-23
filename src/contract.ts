@@ -80,6 +80,7 @@ export const ApprovalRefusalReasonSchema = Schema.Literals([
   "fenced",
   "not-granted",
   "read-only",
+  "not-executed",
   "pending",
   "in-flight",
   "outcome-unknown",
@@ -87,6 +88,13 @@ export const ApprovalRefusalReasonSchema = Schema.Literals([
 ]);
 /** Human explanation for a denied approval; distinct from the typed refusal cause. */
 export const MAX_APPROVAL_DENIAL_NOTE_LENGTH = 512;
+/** Host-authored explanation of a refusal, distinct from a person's denial note. */
+export const ApprovalRefusalDetailSchema = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+);
+/** The host's own typed cause for a not-executed refusal, when its detail alone is not enough. */
+export const ApprovalRefusalCodeSchema = Schema.Literal("too_large");
 /** Bounded nonempty human feedback; user text, never approval authority. */
 export const ApprovalDenialNoteSchema = Schema.String.check(
   Schema.isMinLength(1),
@@ -131,6 +139,8 @@ export const ApprovalRecordSchema = Schema.Struct({
     ]),
   ),
   reason: Schema.NullOr(ApprovalRefusalReasonSchema),
+  refusalDetail: Schema.optionalKey(ApprovalRefusalDetailSchema),
+  refusalCode: Schema.optionalKey(ApprovalRefusalCodeSchema),
   denialNote: Schema.optionalKey(ApprovalDenialNoteSchema),
   requestedAt: Timestamp,
   expiresAt: Timestamp,
@@ -185,6 +195,8 @@ export type ApprovalRefusal = Readonly<{
   kind: "refused";
   reason: typeof ApprovalRefusalReasonSchema.Type;
   denialNote?: typeof ApprovalDenialNoteSchema.Type;
+  refusalDetail?: typeof ApprovalRefusalDetailSchema.Type;
+  refusalCode?: typeof ApprovalRefusalCodeSchema.Type;
 }>;
 /** The member-bound capability. Host authentication supplies the actor. */
 export type Approvals = Readonly<{

@@ -1,5 +1,15 @@
 # @fungi.computer/approvals
 
+## 0.2.8
+
+### Patch Changes
+
+- Changes since 0.2.7:
+
+  - fix(approvals): treat a disable during a running write as uncertain
+  - fix(approvals): align refusal guidance and preserve typed host verdicts
+  - fix(approvals): keep certain App refusals terminal with their causes
+
 ## 0.2.7
 
 ### Patch Changes

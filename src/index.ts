@@ -9,6 +9,7 @@ export {
   type ApprovalRequest,
   type ApprovalAnswerer,
   type ApprovalAdmission,
+  type ApprovalHostRefusal,
   type ApprovalRuleSetter,
   type ApprovalApplyHost,
   type ApprovalSubmitHost,

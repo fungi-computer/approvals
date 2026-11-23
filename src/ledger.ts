@@ -6,6 +6,8 @@ import {
   type ApprovalEvidence,
   ApprovalRefusalReasonSchema,
   ApprovalDenialNoteSchema,
+  ApprovalRefusalCodeSchema,
+  ApprovalRefusalDetailSchema,
   ApprovalGetInputSchema,
   ApprovalListInputSchema,
   ApprovalAnswerInputSchema,
@@ -24,6 +26,8 @@ export const ApprovalRefusalSchema = Schema.Struct({
   kind: Schema.Literal("refused"),
   reason: ApprovalRefusalReasonSchema,
   denialNote: Schema.optionalKey(ApprovalDenialNoteSchema),
+  refusalDetail: Schema.optionalKey(ApprovalRefusalDetailSchema),
+  refusalCode: Schema.optionalKey(ApprovalRefusalCodeSchema),
 });
 
 /** Native owner of this ledger; the Local runtime supplies its own SQLite owner. */
@@ -89,14 +93,23 @@ export type ApprovalRuleSetter =
   | (Extract<ApprovalAnswerer, { kind: "human" }> &
       Readonly<{ mayManageAgent: boolean }>);
 
+/** Host-attested zero-effect refusals, whether found at recheck or dispatch. */
+export type ApprovalHostRefusal =
+  | Readonly<{ kind: "refused"; reason: "not-granted" | "read-only" }>
+  | Readonly<{
+      kind: "refused";
+      reason: "not-executed";
+      refusalDetail: string;
+      refusalCode?: typeof ApprovalRefusalCodeSchema.Type;
+    }>;
 /** Mycelium owns admission; the ledger compares its opaque fence, never grant grammar. */
 export type ApprovalAdmission =
   | Readonly<{ kind: "authorized"; authorityFence: string }>
-  | Readonly<{ kind: "refused"; reason: "not-granted" | "read-only" }>;
+  | ApprovalHostRefusal;
 /** Host verdict outside App JSON: only an attested zero-effect refusal is denied. */
 export type ApprovalDispatchCompletion =
   | Readonly<{ kind: "completed"; output: typeof Schema.Json.Type }>
-  | Readonly<{ kind: "refused"; reason: "not-granted" | "read-only" }>;
+  | ApprovalHostRefusal;
 /** Host-only adapter to the existing operation door; not an Agent continuation. */
 export type ApprovalApplyHost = Readonly<{
   /** Re-read requester grants and the operation fence immediately before dispatch. */
@@ -740,19 +753,19 @@ export class ApprovalLedger {
     if (claim.kind !== "claimed") return claim;
     try {
       const admission = await host.recheck(claim.record);
-      const refusal =
-        admission.kind === "refused"
-          ? admission.reason
-          : admission.authorityFence !== claim.record.authorityFence
-            ? "fenced"
-            : null;
-      if (refusal !== null) return this.finishDenied(claim.record, refusal);
+      if (admission.kind === "refused")
+        return this.finishDenied(claim.record, admission);
+      if (admission.authorityFence !== claim.record.authorityFence)
+        return this.finishDenied(claim.record, {
+          kind: "refused",
+          reason: "fenced",
+        });
       const completion = await host.dispatch({
         record: claim.record,
         input: claim.input,
       });
       if (completion.kind === "refused")
-        return this.finishDenied(claim.record, completion.reason);
+        return this.finishDenied(claim.record, completion);
       const output = completion.output;
       const outputJson = encodeJson(output);
       return this.options.owner.transactionSync(() => {
@@ -800,20 +813,32 @@ export class ApprovalLedger {
 
   private finishDenied(
     claimed: ApprovalRecord,
-    reason: "fenced" | "not-granted" | "read-only",
+    refusal:
+      ApprovalHostRefusal | Readonly<{ kind: "refused"; reason: "fenced" }>,
   ): ApprovalRefusal {
     return this.options.owner.transactionSync(() => {
       const current = this.get(claimed.recordId);
       if (current?.state !== "claimed" || current.revision !== claimed.revision)
         return { kind: "refused", reason: "outcome-unknown" };
+      const { reason } = refusal;
+      const detail =
+        "refusalDetail" in refusal
+          ? {
+              refusalDetail: refusal.refusalDetail,
+              ...(refusal.refusalCode !== undefined && {
+                refusalCode: refusal.refusalCode,
+              }),
+            }
+          : {};
       this.save({
         ...current,
         state: "denied",
         reason,
+        ...detail,
         updatedAt: this.options.now(),
         revision: current.revision + 1,
       });
-      return { kind: "refused", reason };
+      return { kind: "refused", reason, ...detail };
     });
   }
 
@@ -842,10 +867,14 @@ export class ApprovalLedger {
   }
 
   private deniedResult(record: ApprovalRecord): ApprovalRefusal {
-    const refusal: ApprovalRefusal = {
+    let refusal: ApprovalRefusal = {
       kind: "refused",
       reason: record.reason ?? "declined",
     };
+    if (record.refusalDetail !== undefined)
+      refusal = { ...refusal, refusalDetail: record.refusalDetail };
+    if (record.refusalCode !== undefined)
+      refusal = { ...refusal, refusalCode: record.refusalCode };
     return record.denialNote === undefined
       ? refusal
       : { ...refusal, denialNote: record.denialNote };

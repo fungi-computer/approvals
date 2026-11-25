@@ -57,6 +57,8 @@ export type ApprovalRequest = Readonly<{
   inputJson: string;
   /** The waiting call's own deadline: the record never outlives the call that asked. */
   expiresAt?: number;
+  /** The Agent command that asked, so cancelling it can withdraw its own cards only. */
+  commandId?: string;
   /** Host-only containment escalation: a general auto-approve rule cannot bypass the sandbox. */
   requireHumanApproval?: boolean;
   /** Host-attested matching command-prefix policy; independent of the general auto-approve switch. */
@@ -149,6 +151,9 @@ const decodeRow = Schema.decodeUnknownSync(
   Schema.Struct({ record_json: Schema.String }),
 );
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
+const decodeRecordId = Schema.decodeUnknownSync(
+  Schema.Struct({ record_id: ApprovalRecordSchema.fields.recordId }),
+);
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 const decodePayload = Schema.decodeUnknownSync(
@@ -189,6 +194,12 @@ export class ApprovalLedger {
     );
     options.owner.sql.exec(
       "CREATE TABLE IF NOT EXISTS approval_payloads (home_key TEXT NOT NULL, record_id TEXT NOT NULL, input_json TEXT NOT NULL, output_json TEXT, PRIMARY KEY (home_key, record_id))",
+    );
+    options.owner.sql.exec(
+      "CREATE TABLE IF NOT EXISTS approval_commands (home_key TEXT NOT NULL, record_id TEXT NOT NULL, command_id TEXT NOT NULL, PRIMARY KEY (home_key, record_id, command_id))",
+    );
+    options.owner.sql.exec(
+      "CREATE TABLE IF NOT EXISTS approval_deliveries (home_key TEXT NOT NULL, record_id TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, cause TEXT, PRIMARY KEY (home_key, record_id))",
     );
   }
 
@@ -415,6 +426,9 @@ export class ApprovalLedger {
           return { kind: "refused", reason: "identity-conflict" };
         return { kind: "record", record: existing, created: false };
       }
+      const open = this.openDuplicate(request, inputSha256);
+      if (open !== null)
+        return { kind: "record", record: open, created: false };
       const uncertain = this.uncertainAppWrite(request, inputSha256);
       if (uncertain !== null)
         return { kind: "record", record: uncertain, created: false };
@@ -470,6 +484,48 @@ export class ApprovalLedger {
       );
       return { kind: "record", record, created: true };
     });
+  }
+
+  /**
+   * A fresh tool identity asking for the same App write while one is still
+   * open joins that record: a person sees one card, never a stack of copies.
+   * A policy-approved record is applying inside its own call, so it is never joined.
+   */
+  private openDuplicate(
+    request: ApprovalRequest,
+    inputSha256: string,
+  ): ApprovalRecord | null {
+    if (
+      this.options.home.kind !== "team" ||
+      request.app === undefined ||
+      request.requester.sessionId === null
+    )
+      return null;
+    const rows = this.options.owner.sql
+      .exec(
+        "SELECT record_id FROM approval_records WHERE home_key = ? AND json_extract(record_json, '$.state') IN ('requested', 'pending', 'approved', 'claimed') AND json_extract(record_json, '$.by.kind') IS NOT 'policy' AND json_extract(record_json, '$.requester.principalId') = ? AND json_extract(record_json, '$.requester.agentId') IS ? AND json_extract(record_json, '$.requester.sessionId') = ? AND json_extract(record_json, '$.module') = ? AND json_extract(record_json, '$.operation') = ? AND json_extract(record_json, '$.access') = ? AND json_extract(record_json, '$.authorityFence') = ? AND json_extract(record_json, '$.description.inputSha256') = ? ORDER BY record_id LIMIT 1",
+        this.homeKey,
+        request.requester.principalId,
+        request.requester.agentId,
+        request.requester.sessionId,
+        request.module,
+        request.operation,
+        request.access,
+        request.authorityFence,
+        inputSha256,
+      )
+      .toArray();
+    const [row] = rows;
+    if (row === undefined) return null;
+    // A pending record past its deadline expires on read and is not open.
+    const record = this.get(decodeRecordId(row).record_id);
+    return record !== null &&
+      (record.state === "pending" ||
+        record.state === "approved" ||
+        record.state === "claimed" ||
+        record.state === "requested")
+      ? record
+      : null;
   }
 
   /** A fresh tool identity cannot authorize repeating an uncertain App write. */
@@ -619,7 +675,11 @@ export class ApprovalLedger {
     });
   }
 
-  /** Native boot only: a prior owner's waiting calls no longer exist. */
+  /**
+   * Native boot of a home whose requests wait inside a live call (Oyster):
+   * the calls that waited died with their isolate. A Team home parks its
+   * requests and never calls this.
+   */
   withdrawWaiting(): number {
     const decode = Schema.decodeUnknownSync(
       Schema.Struct({ record_id: ApprovalRecordSchema.fields.recordId }),
@@ -632,6 +692,195 @@ export class ApprovalLedger {
       .toArray();
     for (const row of rows) this.withdraw(decode(row).record_id);
     return rows.length;
+  }
+
+  /**
+   * The person cancelled or deleted a Session: its unanswered requests made up
+   * to `before` end with it and owe the Agent no follow-up. One bounded batch;
+   * a caller repeats until it returns 0.
+   */
+  withdrawForSession(sessionId: string, before: number): number {
+    return this.withdrawMatching(
+      "json_extract(record_json, '$.requester.sessionId') = ? AND json_extract(record_json, '$.requestedAt') <= ?",
+      sessionId,
+      before,
+    );
+  }
+
+  /**
+   * One Agent command was cancelled. A card a second command joined stays until
+   * every command that asked for it has been cancelled; a card only this command
+   * wanted ends, silently. Other Sessions' and commands' cards are untouched.
+   * One bounded batch; a caller repeats until it returns 0.
+   */
+  withdrawForCommand(sessionId: string, commandId: string): number {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({ record_id: ApprovalRecordSchema.fields.recordId }),
+    );
+    const rows = this.options.owner.sql
+      .exec(
+        "SELECT c.record_id AS record_id FROM approval_commands c JOIN approval_records r ON r.home_key = c.home_key AND r.record_id = c.record_id WHERE c.home_key = ? AND c.command_id = ? AND json_extract(r.record_json, '$.requester.sessionId') = ? ORDER BY c.record_id LIMIT 100",
+        this.homeKey,
+        commandId,
+        sessionId,
+      )
+      .toArray();
+    for (const row of rows) {
+      const { record_id: recordId } = decode(row);
+      this.options.owner.transactionSync(() => {
+        this.options.owner.sql.exec(
+          "DELETE FROM approval_commands WHERE home_key = ? AND record_id = ? AND command_id = ?",
+          this.homeKey,
+          recordId,
+          commandId,
+        );
+        const left = Schema.decodeUnknownSync(Schema.Struct({ n: Schema.Int }))(
+          this.options.owner.sql
+            .exec(
+              "SELECT COUNT(*) AS n FROM approval_commands WHERE home_key = ? AND record_id = ?",
+              this.homeKey,
+              recordId,
+            )
+            .toArray()[0],
+        ).n;
+        if (left > 0) return;
+        this.withdraw(recordId);
+        this.options.owner.sql.exec(
+          "UPDATE approval_deliveries SET state = 'cancelled' WHERE home_key = ? AND record_id = ? AND state = 'owed'",
+          this.homeKey,
+          recordId,
+        );
+      });
+    }
+    return rows.length;
+  }
+
+  /** The Agent is gone: every unanswered request it made ends, silently. One bounded batch. */
+  withdrawForAgent(agentId: string): number {
+    return this.withdrawMatching(
+      "json_extract(record_json, '$.requester.agentId') = ?",
+      agentId,
+    );
+  }
+
+  private withdrawMatching(
+    condition: string,
+    ...params: readonly (string | number)[]
+  ): number {
+    const rows = this.options.owner.sql
+      .exec(
+        `SELECT record_id FROM approval_records WHERE home_key = ? AND json_extract(record_json, '$.state') IN ('pending', 'approved') AND ${condition} ORDER BY record_id LIMIT 100`,
+        this.homeKey,
+        ...params,
+      )
+      .toArray();
+    for (const row of rows) {
+      const { record_id: recordId } = decodeRecordId(row);
+      this.withdraw(recordId);
+      this.options.owner.sql.exec(
+        "UPDATE approval_deliveries SET state = 'cancelled' WHERE home_key = ? AND record_id = ? AND state = 'owed'",
+        this.homeKey,
+        recordId,
+      );
+    }
+    return rows.length;
+  }
+
+  /**
+   * The requester was told this request is waiting: the home now owes it
+   * exactly one follow-up once the record ends. Asking again changes nothing.
+   */
+  expectDelivery(recordId: string, commandId: string | null): void {
+    this.options.owner.sql.exec(
+      "INSERT OR IGNORE INTO approval_deliveries (home_key, record_id, state, attempts, next_at) VALUES (?, ?, 'owed', 0, 0)",
+      this.homeKey,
+      recordId,
+    );
+    // A second command asking for the same open card is recorded too: the card
+    // outlives the first command's cancel while another still wants it.
+    if (commandId !== null)
+      this.options.owner.sql.exec(
+        "INSERT OR IGNORE INTO approval_commands (home_key, record_id, command_id) VALUES (?, ?, ?)",
+        this.homeKey,
+        recordId,
+        commandId,
+      );
+  }
+
+  /** Keep the App's own words for a write that failed, so a restart cannot lose them. */
+  recordDeliveryCause(recordId: string, cause: string): void {
+    this.options.owner.sql.exec(
+      "UPDATE approval_deliveries SET cause = ? WHERE home_key = ? AND record_id = ?",
+      cause.slice(0, 1000),
+      this.homeKey,
+      recordId,
+    );
+  }
+
+  /** Ended records whose follow-up is owed and due, oldest first; bounded, no side effects. */
+  dueDeliveries(limit: number): readonly Readonly<{
+    record: ApprovalRecord;
+    attempts: number;
+    cause: string | null;
+  }>[] {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({
+        record_id: ApprovalRecordSchema.fields.recordId,
+        attempts: Schema.Int,
+        cause: Schema.NullOr(Schema.String),
+      }),
+    );
+    return this.options.owner.sql
+      .exec(
+        "SELECT d.record_id AS record_id, d.attempts AS attempts, d.cause AS cause FROM approval_deliveries d JOIN approval_records r ON r.home_key = d.home_key AND r.record_id = d.record_id WHERE d.home_key = ? AND d.state = 'owed' AND d.next_at <= ? AND json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown') ORDER BY d.record_id LIMIT ?",
+        this.homeKey,
+        this.options.now(),
+        limit,
+      )
+      .toArray()
+      .flatMap((raw) => {
+        const row = decode(raw);
+        const record = this.get(row.record_id);
+        return record === null
+          ? []
+          : [{ record, attempts: row.attempts, cause: row.cause }];
+      });
+  }
+
+  /** Earliest time a deferred follow-up is due again, or null when none waits. */
+  nextDeliveryAt(): number | null {
+    const row = this.options.owner.sql
+      .exec(
+        "SELECT MIN(d.next_at) AS due FROM approval_deliveries d JOIN approval_records r ON r.home_key = d.home_key AND r.record_id = d.record_id WHERE d.home_key = ? AND d.state = 'owed' AND json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown')",
+        this.homeKey,
+      )
+      .toArray()[0];
+    return Schema.decodeUnknownSync(
+      Schema.Struct({ due: Schema.NullOr(Schema.Int) }),
+    )(row).due;
+  }
+
+  /** The follow-up reached its Session, or can never reach it; either way it is done. */
+  finishDelivery(
+    recordId: string,
+    outcome: "delivered" | "undeliverable",
+  ): void {
+    this.options.owner.sql.exec(
+      "UPDATE approval_deliveries SET state = ? WHERE home_key = ? AND record_id = ? AND state = 'owed'",
+      outcome,
+      this.homeKey,
+      recordId,
+    );
+  }
+
+  /** A failed attempt: try again at `nextAt`. */
+  deferDelivery(recordId: string, nextAt: number): void {
+    this.options.owner.sql.exec(
+      "UPDATE approval_deliveries SET attempts = attempts + 1, next_at = ? WHERE home_key = ? AND record_id = ? AND state = 'owed'",
+      nextAt,
+      this.homeKey,
+      recordId,
+    );
   }
 
   /** Expire one bounded home-local quantum without a member read or an approval. */
@@ -681,6 +930,29 @@ export class ApprovalLedger {
       )
       .toArray()
       .map((row) => decode(row).record_id);
+  }
+
+  /**
+   * Team boot: a policy approval applies inside the call that asked, and that
+   * call died with its isolate, so the unclaimed record must never run alone.
+   * One bounded batch; a caller repeats until it returns 0.
+   */
+  withdrawPolicyApproved(): number {
+    const rows = this.options.owner.sql
+      .exec(
+        "SELECT record_id FROM approval_records WHERE home_key = ? AND json_extract(record_json, '$.state') = 'approved' AND json_extract(record_json, '$.by.kind') = 'policy' ORDER BY record_id LIMIT 100",
+        this.homeKey,
+      )
+      .toArray();
+    for (const row of rows) this.withdraw(decodeRecordId(row).record_id);
+    return rows.length;
+  }
+
+  /** The recorded output of an applied record, for the follow-up that reports it. */
+  readOutput(recordId: string): typeof Schema.Json.Type | null {
+    const output =
+      this.get(recordId) === null ? null : this.payload(recordId).output_json;
+    return output === null ? null : decodeJson(output);
   }
 
   /** Host-private display recovery; never exposed by the member-bound capability. */

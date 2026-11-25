@@ -234,3 +234,248 @@ it("an inline policy apply returns the output in the call", async () => {
     output: { saved: true },
   });
 });
+
+const app = { displayName: "Notes", operationLabel: "Replace the note" };
+const appRequest: ApprovalRequest = { ...request, app };
+const ownerAnswerer: ApprovalAnswerer = {
+  kind: "human",
+  memberId: "owner-1",
+  role: "owner",
+  actingForAgent: false,
+  mayUseOperation: true,
+};
+const noHost: ApprovalApplyHost = {
+  recheck: () =>
+    Promise.resolve({ kind: "authorized", authorityFence: "fence-1" }),
+  dispatch: () =>
+    Promise.resolve({ kind: "completed", output: { saved: true } }),
+};
+
+async function stage(
+  ledger: ApprovalLedger,
+  overrides: Partial<ApprovalRequest> = {},
+) {
+  const pending = await ledger.submit({ ...appRequest, ...overrides }, noHost);
+  if (pending.kind !== "pending_approval") throw new Error("not pending");
+  return pending.recordId;
+}
+
+it("asking again for the same open App write joins its record instead of stacking a card", async () => {
+  const { ledger } = teamLedger();
+  const first = await stage(ledger);
+  const second = await stage(ledger, {
+    idempotencyKey: "[session-a,cmd-b,call-b,0]",
+  });
+  expect(second).toBe(first);
+  // Another input, another Session or another operation is its own request.
+  expect(
+    await stage(ledger, {
+      idempotencyKey: "k3",
+      inputJson: '{"text":"other"}',
+    }),
+  ).not.toBe(first);
+  expect(
+    await stage(ledger, {
+      idempotencyKey: "k4",
+      requester: { ...request.requester, sessionId: "session-b" },
+    }),
+  ).not.toBe(first);
+  expect(
+    await stage(ledger, { idempotencyKey: "k5", operation: "other" }),
+  ).not.toBe(first);
+});
+
+it("once the open request is answered and applied, the same write asks again", async () => {
+  const { ledger } = teamLedger();
+  const first = await stage(ledger);
+  ledger.answer(
+    { recordId: first, decision: "deny", expectedRevision: 1 },
+    ownerAnswerer,
+  );
+  expect(await stage(ledger, { idempotencyKey: "later" })).not.toBe(first);
+});
+
+it("a request past its deadline is not open: the same write gets a fresh record", async () => {
+  let now = 10;
+  const { ledger } = teamLedger(() => now);
+  const first = await stage(ledger, { expiresAt: 100 });
+  now = 200;
+  expect(await stage(ledger, { idempotencyKey: "later" })).not.toBe(first);
+});
+
+it("withdrawing a Session's requests ends only its own unanswered ones up to the cutoff", async () => {
+  let now = 10;
+  const { ledger } = teamLedger(() => now);
+  const old = await stage(ledger, { idempotencyKey: "a" });
+  const other = await stage(ledger, {
+    idempotencyKey: "b",
+    inputJson: '{"text":"two"}',
+    requester: { ...request.requester, sessionId: "session-b" },
+  });
+  now = 50;
+  const newer = await stage(ledger, {
+    idempotencyKey: "c",
+    inputJson: '{"text":"three"}',
+  });
+  ledger.expectDelivery(old, "command-old");
+  expect(ledger.withdrawForSession("session-a", 20)).toBe(1);
+  expect(ledger.get(old)?.state).toBe("expired");
+  expect(ledger.get(other)?.state).toBe("pending");
+  expect(ledger.get(newer)?.state).toBe("pending");
+  // Approving after the withdrawal is refused, and no follow-up is owed.
+  expect(
+    ledger.answer(
+      { recordId: old, decision: "approve", expectedRevision: 1 },
+      ownerAnswerer,
+    ),
+  ).toEqual({ kind: "refused", reason: "expired" });
+  expect(ledger.dueDeliveries(10)).toEqual([]);
+  expect(ledger.nextDeliveryAt()).toBeNull();
+});
+
+it("withdrawing an Agent's requests ends every unanswered one it made", async () => {
+  const { ledger } = teamLedger();
+  const mine = await stage(ledger, { idempotencyKey: "a" });
+  const approved = await stage(ledger, {
+    idempotencyKey: "b",
+    inputJson: '{"text":"two"}',
+  });
+  ledger.answer(
+    { recordId: approved, decision: "approve", expectedRevision: 1 },
+    ownerAnswerer,
+  );
+  const theirs = await stage(ledger, {
+    idempotencyKey: "c",
+    inputJson: '{"text":"three"}',
+    requester: {
+      ...request.requester,
+      principalId: "agent-b",
+      agentId: "agent-b",
+    },
+  });
+  expect(ledger.withdrawForAgent("agent-a")).toBe(2);
+  expect(ledger.get(mine)?.state).toBe("expired");
+  expect(ledger.get(approved)?.state).toBe("expired");
+  expect(ledger.get(theirs)?.state).toBe("pending");
+  expect(ledger.withdrawForAgent("agent-a")).toBe(0);
+});
+
+it("a follow-up is owed once, only after the record ends, and retries until it is finished", async () => {
+  let now = 10;
+  const { ledger } = teamLedger(() => now);
+  const id = await stage(ledger);
+  ledger.expectDelivery(id, null);
+  ledger.expectDelivery(id, null);
+  // Nothing is due while the request still waits.
+  expect(ledger.dueDeliveries(10)).toEqual([]);
+  expect(ledger.nextDeliveryAt()).toBeNull();
+  ledger.answer(
+    { recordId: id, decision: "deny", expectedRevision: 1 },
+    ownerAnswerer,
+  );
+  expect(ledger.dueDeliveries(10)).toMatchObject([
+    { record: { recordId: id, state: "denied" }, attempts: 0 },
+  ]);
+  expect(ledger.nextDeliveryAt()).toBe(0);
+  ledger.deferDelivery(id, now + 5_000);
+  expect(ledger.dueDeliveries(10)).toEqual([]);
+  expect(ledger.nextDeliveryAt()).toBe(5_010);
+  now = 6_000;
+  expect(ledger.dueDeliveries(10)).toMatchObject([{ attempts: 1 }]);
+  ledger.finishDelivery(id, "delivered");
+  expect(ledger.dueDeliveries(10)).toEqual([]);
+  expect(ledger.nextDeliveryAt()).toBeNull();
+});
+
+it("a request that expires by time owes its follow-up like any other ending", async () => {
+  let now = 10;
+  const { ledger } = teamLedger(() => now);
+  const id = await stage(ledger, { expiresAt: 100 });
+  ledger.expectDelivery(id, null);
+  now = 200;
+  ledger.expirePending();
+  expect(ledger.dueDeliveries(10)).toMatchObject([
+    { record: { recordId: id, state: "expired" } },
+  ]);
+});
+
+it("cancelling one command withdraws only its own cards, not another command's in the same Session", async () => {
+  const { ledger } = teamLedger();
+  const first = await stage(ledger, {
+    idempotencyKey: "a",
+    commandId: "command-1",
+  });
+  const second = await stage(ledger, {
+    idempotencyKey: "b",
+    inputJson: '{"text":"two"}',
+    commandId: "command-2",
+  });
+  ledger.expectDelivery(first, "command-1");
+  ledger.expectDelivery(second, "command-2");
+  expect(ledger.withdrawForCommand("session-a", "command-1")).toBe(1);
+  expect(ledger.get(first)?.state).toBe("expired");
+  expect(ledger.get(second)?.state).toBe("pending");
+  // Its follow-up is cancelled; the other command's is still owed.
+  ledger.answer(
+    { recordId: second, decision: "deny", expectedRevision: 1 },
+    ownerAnswerer,
+  );
+  expect(ledger.dueDeliveries(10).map(({ record }) => record.recordId)).toEqual(
+    [second],
+  );
+  expect(ledger.withdrawForCommand("session-a", "unknown")).toBe(0);
+});
+
+it("a policy-approved record in flight is never joined by a later identical request", async () => {
+  const { ledger } = teamLedger();
+  expect(
+    ledger.setAutoApprove(
+      {
+        scope: { agentId: "agent-a" },
+        family: { module: "attachment-notes", access: "write" },
+        enabled: true,
+      },
+      setter("owner"),
+    ),
+  ).toMatchObject({ kind: "updated" });
+  const staged = await ledger.request(appRequest);
+  if (staged.kind !== "record") throw new Error(staged.reason);
+  expect(staged.record.state).toBe("approved");
+  const again = await ledger.request({
+    ...appRequest,
+    idempotencyKey: "other",
+  });
+  if (again.kind !== "record") throw new Error(again.reason);
+  expect(again.record.recordId).not.toBe(staged.record.recordId);
+});
+
+it("the App's own words for a lost write are kept with the delivery row", async () => {
+  const { ledger } = teamLedger();
+  const id = await stage(ledger);
+  ledger.expectDelivery(id, null);
+  ledger.recordDeliveryCause(id, "socket closed");
+  ledger.answer(
+    { recordId: id, decision: "deny", expectedRevision: 1 },
+    ownerAnswerer,
+  );
+  expect(ledger.dueDeliveries(10)[0]?.cause).toBe("socket closed");
+});
+
+it("a card two commands asked for survives the first's cancel and ends with the last", async () => {
+  const { ledger } = teamLedger();
+  const id = await stage(ledger, { commandId: "command-1" });
+  ledger.expectDelivery(id, "command-1");
+  // A second command asks for the same open write and joins the card.
+  const joined = await stage(ledger, {
+    idempotencyKey: "second",
+    commandId: "command-2",
+  });
+  expect(joined).toBe(id);
+  ledger.expectDelivery(joined, "command-2");
+  expect(ledger.withdrawForCommand("session-a", "command-1")).toBe(1);
+  expect(ledger.get(id)?.state).toBe("pending");
+  expect(ledger.withdrawForCommand("session-a", "command-2")).toBe(1);
+  expect(ledger.get(id)?.state).toBe("expired");
+  expect(ledger.withdrawForCommand("session-a", "command-2")).toBe(0);
+  expect(ledger.dueDeliveries(10)).toEqual([]);
+});

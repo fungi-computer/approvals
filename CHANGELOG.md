@@ -1,5 +1,15 @@
 # @fungi.computer/approvals
 
+## 0.3.0
+
+### Minor Changes
+
+- Changes since 0.2.9:
+
+  - fix(hub): follow every command a parked card serves
+  - fix(hub): withdraw parked cards by command, durably
+  - feat(hub): park approvals until the person answers
+
 ## 0.2.9
 
 ### Patch Changes

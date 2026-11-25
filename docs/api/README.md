@@ -521,11 +521,265 @@ Withdraw an unclaimed call; a claimed effect must retain its outcome record.
 withdrawWaiting(): number;
 ```
 
-Native boot only: a prior owner's waiting calls no longer exist.
+Native boot of a home whose requests wait inside a live call (Oyster): the calls
+that waited died with their isolate. A Team home parks its requests and never
+calls this.
 
 ###### Returns
 
 `number`
+
+##### withdrawForSession()
+
+```ts
+withdrawForSession(sessionId, before): number;
+```
+
+The person cancelled or deleted a Session: its unanswered requests made up to
+`before` end with it and owe the Agent no follow-up. One bounded batch; a caller
+repeats until it returns 0.
+
+###### Parameters
+
+| Parameter   | Type     |
+| ----------- | -------- |
+| `sessionId` | `string` |
+| `before`    | `number` |
+
+###### Returns
+
+`number`
+
+##### withdrawForCommand()
+
+```ts
+withdrawForCommand(sessionId, commandId): number;
+```
+
+One Agent command was cancelled. A card a second command joined stays until
+every command that asked for it has been cancelled; a card only this command
+wanted ends, silently. Other Sessions' and commands' cards are untouched. One
+bounded batch; a caller repeats until it returns 0.
+
+###### Parameters
+
+| Parameter   | Type     |
+| ----------- | -------- |
+| `sessionId` | `string` |
+| `commandId` | `string` |
+
+###### Returns
+
+`number`
+
+##### withdrawForAgent()
+
+```ts
+withdrawForAgent(agentId): number;
+```
+
+The Agent is gone: every unanswered request it made ends, silently. One bounded
+batch.
+
+###### Parameters
+
+| Parameter | Type     |
+| --------- | -------- |
+| `agentId` | `string` |
+
+###### Returns
+
+`number`
+
+##### expectDelivery()
+
+```ts
+expectDelivery(recordId, commandId): void;
+```
+
+The requester was told this request is waiting: the home now owes it exactly one
+follow-up once the record ends. Asking again changes nothing.
+
+###### Parameters
+
+| Parameter   | Type               |
+| ----------- | ------------------ |
+| `recordId`  | `string`           |
+| `commandId` | `string` \| `null` |
+
+###### Returns
+
+`void`
+
+##### recordDeliveryCause()
+
+```ts
+recordDeliveryCause(recordId, cause): void;
+```
+
+Keep the App's own words for a write that failed, so a restart cannot lose them.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+| `cause`    | `string` |
+
+###### Returns
+
+`void`
+
+##### dueDeliveries()
+
+```ts
+dueDeliveries(limit): readonly Readonly<{
+  record: {
+     recordId: string;
+     requester: {
+        principalId: string;
+        agentId: string | null;
+        sessionId: string | null;
+        displayName: string;
+     };
+     module: string;
+     operation: string;
+     access: "write" | "external";
+     description: {
+        title: string;
+        app?: {
+           displayName: string;
+           operationLabel: string;
+        };
+        inputBytes: number;
+        inputSha256: string;
+     };
+     evidence?: readonly object[];
+     authorityFence: string;
+     reversibility: "reversible" | "irreversible-external";
+     state:   | "pending"
+        | "expired"
+        | "denied"
+        | "requested"
+        | "approved"
+        | "claimed"
+        | "applied"
+        | "outcome_unknown";
+     by:   | {
+        kind: "human";
+        memberId: string;
+      }
+        | {
+        kind: "policy";
+      }
+        | null;
+     reason:   | "pending"
+        | "expired"
+        | "not-found"
+        | "not-eligible"
+        | "already-answered"
+        | "stale-revision"
+        | "declined"
+        | "fenced"
+        | "not-granted"
+        | "read-only"
+        | "not-executed"
+        | "in-flight"
+        | "outcome-unknown"
+        | "identity-conflict"
+        | null;
+     refusalDetail?: string;
+     refusalCode?: "too_large";
+     denialNote?: string;
+     requestedAt: number;
+     expiresAt: number;
+     updatedAt: number;
+     revision: number;
+  };
+  attempts: number;
+  cause: string | null;
+}>[];
+```
+
+Ended records whose follow-up is owed and due, oldest first; bounded, no side
+effects.
+
+###### Parameters
+
+| Parameter | Type     |
+| --------- | -------- |
+| `limit`   | `number` |
+
+###### Returns
+
+readonly `Readonly`\<\{ `record`: \{ `recordId`: `string`; `requester`: \{
+`principalId`: `string`; `agentId`: `string` \| `null`; `sessionId`: `string` \|
+`null`; `displayName`: `string`; \}; `module`: `string`; `operation`: `string`;
+`access`: `"write"` \| `"external"`; `description`: \{ `title`: `string`;
+`app?`: \{ `displayName`: `string`; `operationLabel`: `string`; \};
+`inputBytes`: `number`; `inputSha256`: `string`; \}; `evidence?`: readonly
+`object`[]; `authorityFence`: `string`; `reversibility`: `"reversible"` \|
+`"irreversible-external"`; `state`: \| `"pending"` \| `"expired"` \| `"denied"`
+\| `"requested"` \| `"approved"` \| `"claimed"` \| `"applied"` \|
+`"outcome_unknown"`; `by`: \| \{ `kind`: `"human"`; `memberId`: `string`; \} \|
+\{ `kind`: `"policy"`; \} \| `null`; `reason`: \| `"pending"` \| `"expired"` \|
+`"not-found"` \| `"not-eligible"` \| `"already-answered"` \| `"stale-revision"`
+\| `"declined"` \| `"fenced"` \| `"not-granted"` \| `"read-only"` \|
+`"not-executed"` \| `"in-flight"` \| `"outcome-unknown"` \|
+`"identity-conflict"` \| `null`; `refusalDetail?`: `string`; `refusalCode?`:
+`"too_large"`; `denialNote?`: `string`; `requestedAt`: `number`; `expiresAt`:
+`number`; `updatedAt`: `number`; `revision`: `number`; \}; `attempts`: `number`;
+`cause`: `string` \| `null`; \}\>[]
+
+##### nextDeliveryAt()
+
+```ts
+nextDeliveryAt(): number | null;
+```
+
+Earliest time a deferred follow-up is due again, or null when none waits.
+
+###### Returns
+
+`number` \| `null`
+
+##### finishDelivery()
+
+```ts
+finishDelivery(recordId, outcome): void;
+```
+
+The follow-up reached its Session, or can never reach it; either way it is done.
+
+###### Parameters
+
+| Parameter  | Type                               |
+| ---------- | ---------------------------------- |
+| `recordId` | `string`                           |
+| `outcome`  | `"delivered"` \| `"undeliverable"` |
+
+###### Returns
+
+`void`
+
+##### deferDelivery()
+
+```ts
+deferDelivery(recordId, nextAt): void;
+```
+
+A failed attempt: try again at `nextAt`.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+| `nextAt`   | `number` |
+
+###### Returns
+
+`void`
 
 ##### expirePending()
 
@@ -563,6 +817,38 @@ dispatches.
 ###### Returns
 
 readonly `string`[]
+
+##### withdrawPolicyApproved()
+
+```ts
+withdrawPolicyApproved(): number;
+```
+
+Team boot: a policy approval applies inside the call that asked, and that call
+died with its isolate, so the unclaimed record must never run alone. One bounded
+batch; a caller repeats until it returns 0.
+
+###### Returns
+
+`number`
+
+##### readOutput()
+
+```ts
+readOutput(recordId): Json;
+```
+
+The recorded output of an applied record, for the follow-up that reports it.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+
+###### Returns
+
+`Json`
 
 ##### readInput()
 
@@ -938,6 +1224,7 @@ type ApprovalRequest = Readonly<{
   idempotencyKey: string;
   inputJson: string;
   expiresAt?: number;
+  commandId?: string;
   requireHumanApproval?: boolean;
   prefixPolicyApproved?: boolean;
 }>;

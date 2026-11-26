@@ -1677,3 +1677,42 @@ it("a Team App retry cannot ask again for an identical write whose approved disp
     ).toMatchObject({ kind: "record", created: true });
   }
 });
+
+it("a store written before approval holds existed opens, and its owed delivery still comes due", async () => {
+  const database = new DatabaseSync(":memory:");
+  onTestFinished(() => {
+    database.close();
+  });
+  let now = 10;
+  const open = () =>
+    new ApprovalLedger({
+      owner: fromNodeSqlite(database),
+      home: { kind: "local", id: "old-shape" },
+      now: () => now,
+    });
+  const before = open();
+  const staged = await before.request({
+    ...action,
+    requireHumanApproval: true,
+    expiresAt: 30,
+  });
+  if (staged.kind !== "record") throw new Error(staged.reason);
+  before.expectDelivery(staged.record.recordId, "command-old");
+  // The shape an earlier release stored: no approval_holds table at all.
+  database.exec("DROP TABLE approval_holds");
+  const ledger = open();
+  const table = database
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'approval_holds'",
+    )
+    .all();
+  expect(table).toHaveLength(1);
+  now = 30;
+  expect(ledger.get(staged.record.recordId)?.state).toBe("expired");
+  // The old record never held a Session: nothing is owed a release.
+  expect(ledger.dueReleases(10)).toEqual([]);
+  expect(ledger.nextReleaseAt()).toBeNull();
+  expect(ledger.dueDeliveries(10).map(({ record }) => record.recordId)).toEqual(
+    [staged.record.recordId],
+  );
+});

@@ -762,6 +762,174 @@ The follow-up reached its Session, or can never reach it; either way it is done.
 
 `void`
 
+##### expectHold()
+
+```ts
+expectHold(recordId): void;
+```
+
+The asking Session was told this request waits on a person: the home now owes it
+a release once the record ends, however it ends.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+
+###### Returns
+
+`void`
+
+##### dueReleases()
+
+```ts
+dueReleases(limit): readonly Readonly<{
+  record: {
+     recordId: string;
+     requester: {
+        principalId: string;
+        agentId: string | null;
+        sessionId: string | null;
+        displayName: string;
+     };
+     module: string;
+     operation: string;
+     access: "write" | "external";
+     description: {
+        title: string;
+        app?: {
+           displayName: string;
+           operationLabel: string;
+        };
+        inputBytes: number;
+        inputSha256: string;
+     };
+     evidence?: readonly object[];
+     authorityFence: string;
+     reversibility: "reversible" | "irreversible-external";
+     state:   | "pending"
+        | "expired"
+        | "denied"
+        | "requested"
+        | "approved"
+        | "claimed"
+        | "applied"
+        | "outcome_unknown";
+     by:   | {
+        kind: "human";
+        memberId: string;
+      }
+        | {
+        kind: "policy";
+      }
+        | null;
+     reason:   | "pending"
+        | "expired"
+        | "not-found"
+        | "not-eligible"
+        | "already-answered"
+        | "stale-revision"
+        | "declined"
+        | "fenced"
+        | "not-granted"
+        | "read-only"
+        | "not-executed"
+        | "in-flight"
+        | "outcome-unknown"
+        | "identity-conflict"
+        | null;
+     refusalDetail?: string;
+     refusalCode?: "too_large";
+     denialNote?: string;
+     requestedAt: number;
+     expiresAt: number;
+     updatedAt: number;
+     revision: number;
+  };
+  attempts: number;
+}>[];
+```
+
+Ended records whose Session still holds them and whose release is due; bounded,
+no side effects.
+
+###### Parameters
+
+| Parameter | Type     |
+| --------- | -------- |
+| `limit`   | `number` |
+
+###### Returns
+
+readonly `Readonly`\<\{ `record`: \{ `recordId`: `string`; `requester`: \{
+`principalId`: `string`; `agentId`: `string` \| `null`; `sessionId`: `string` \|
+`null`; `displayName`: `string`; \}; `module`: `string`; `operation`: `string`;
+`access`: `"write"` \| `"external"`; `description`: \{ `title`: `string`;
+`app?`: \{ `displayName`: `string`; `operationLabel`: `string`; \};
+`inputBytes`: `number`; `inputSha256`: `string`; \}; `evidence?`: readonly
+`object`[]; `authorityFence`: `string`; `reversibility`: `"reversible"` \|
+`"irreversible-external"`; `state`: \| `"pending"` \| `"expired"` \| `"denied"`
+\| `"requested"` \| `"approved"` \| `"claimed"` \| `"applied"` \|
+`"outcome_unknown"`; `by`: \| \{ `kind`: `"human"`; `memberId`: `string`; \} \|
+\{ `kind`: `"policy"`; \} \| `null`; `reason`: \| `"pending"` \| `"expired"` \|
+`"not-found"` \| `"not-eligible"` \| `"already-answered"` \| `"stale-revision"`
+\| `"declined"` \| `"fenced"` \| `"not-granted"` \| `"read-only"` \|
+`"not-executed"` \| `"in-flight"` \| `"outcome-unknown"` \|
+`"identity-conflict"` \| `null`; `refusalDetail?`: `string`; `refusalCode?`:
+`"too_large"`; `denialNote?`: `string`; `requestedAt`: `number`; `expiresAt`:
+`number`; `updatedAt`: `number`; `revision`: `number`; \}; `attempts`: `number`;
+\}\>[]
+
+##### nextReleaseAt()
+
+```ts
+nextReleaseAt(): number | null;
+```
+
+Earliest time a deferred release is due again, or null when none waits.
+
+###### Returns
+
+`number` \| `null`
+
+##### finishRelease()
+
+```ts
+finishRelease(recordId): void;
+```
+
+The Session let the approval go (or can no longer hold it): nothing is owed.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+
+###### Returns
+
+`void`
+
+##### deferRelease()
+
+```ts
+deferRelease(recordId, nextAt): void;
+```
+
+A release that did not land: try again at `nextAt`.
+
+###### Parameters
+
+| Parameter  | Type     |
+| ---------- | -------- |
+| `recordId` | `string` |
+| `nextAt`   | `number` |
+
+###### Returns
+
+`void`
+
 ##### deferDelivery()
 
 ```ts

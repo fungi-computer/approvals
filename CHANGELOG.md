@@ -1,5 +1,15 @@
 # @fungi.computer/approvals
 
+## 0.4.0
+
+### Minor Changes
+
+- Changes since 0.3.0:
+
+  - fix(approvals): hash the hold timer key and prove an old store opens
+  - fix(hub): bound and always release a parked approval's hold
+  - feat(hub): a parked approval holds the asking Session until it ends
+
 ## 0.3.0
 
 ### Minor Changes

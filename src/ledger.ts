@@ -199,6 +199,9 @@ export class ApprovalLedger {
       "CREATE TABLE IF NOT EXISTS approval_commands (home_key TEXT NOT NULL, record_id TEXT NOT NULL, command_id TEXT NOT NULL, PRIMARY KEY (home_key, record_id, command_id))",
     );
     options.owner.sql.exec(
+      "CREATE TABLE IF NOT EXISTS approval_holds (home_key TEXT NOT NULL, record_id TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, PRIMARY KEY (home_key, record_id))",
+    );
+    options.owner.sql.exec(
       "CREATE TABLE IF NOT EXISTS approval_deliveries (home_key TEXT NOT NULL, record_id TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, cause TEXT, PRIMARY KEY (home_key, record_id))",
     );
   }
@@ -868,6 +871,75 @@ export class ApprovalLedger {
     this.options.owner.sql.exec(
       "UPDATE approval_deliveries SET state = ? WHERE home_key = ? AND record_id = ? AND state = 'owed'",
       outcome,
+      this.homeKey,
+      recordId,
+    );
+  }
+
+  /**
+   * The asking Session was told this request waits on a person: the home now
+   * owes it a release once the record ends, however it ends.
+   */
+  expectHold(recordId: string): void {
+    this.options.owner.sql.exec(
+      "INSERT OR IGNORE INTO approval_holds (home_key, record_id, state, attempts, next_at) VALUES (?, ?, 'held', 0, 0)",
+      this.homeKey,
+      recordId,
+    );
+  }
+
+  /** Ended records whose Session still holds them and whose release is due; bounded, no side effects. */
+  dueReleases(
+    limit: number,
+  ): readonly Readonly<{ record: ApprovalRecord; attempts: number }>[] {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({
+        record_id: ApprovalRecordSchema.fields.recordId,
+        attempts: Schema.Int,
+      }),
+    );
+    return this.options.owner.sql
+      .exec(
+        "SELECT h.record_id AS record_id, h.attempts AS attempts FROM approval_holds h JOIN approval_records r ON r.home_key = h.home_key AND r.record_id = h.record_id WHERE h.home_key = ? AND h.state = 'held' AND h.next_at <= ? AND json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown') ORDER BY h.record_id LIMIT ?",
+        this.homeKey,
+        this.options.now(),
+        limit,
+      )
+      .toArray()
+      .flatMap((raw) => {
+        const row = decode(raw);
+        const record = this.get(row.record_id);
+        return record === null ? [] : [{ record, attempts: row.attempts }];
+      });
+  }
+
+  /** Earliest time a deferred release is due again, or null when none waits. */
+  nextReleaseAt(): number | null {
+    const row = this.options.owner.sql
+      .exec(
+        "SELECT MIN(h.next_at) AS due FROM approval_holds h JOIN approval_records r ON r.home_key = h.home_key AND r.record_id = h.record_id WHERE h.home_key = ? AND h.state = 'held' AND json_extract(r.record_json, '$.state') IN ('applied', 'denied', 'expired', 'outcome_unknown')",
+        this.homeKey,
+      )
+      .toArray()[0];
+    return Schema.decodeUnknownSync(
+      Schema.Struct({ due: Schema.NullOr(Schema.Int) }),
+    )(row).due;
+  }
+
+  /** The Session let the approval go (or can no longer hold it): nothing is owed. */
+  finishRelease(recordId: string): void {
+    this.options.owner.sql.exec(
+      "UPDATE approval_holds SET state = 'released' WHERE home_key = ? AND record_id = ? AND state = 'held'",
+      this.homeKey,
+      recordId,
+    );
+  }
+
+  /** A release that did not land: try again at `nextAt`. */
+  deferRelease(recordId: string, nextAt: number): void {
+    this.options.owner.sql.exec(
+      "UPDATE approval_holds SET attempts = attempts + 1, next_at = ? WHERE home_key = ? AND record_id = ? AND state = 'held'",
+      nextAt,
       this.homeKey,
       recordId,
     );
